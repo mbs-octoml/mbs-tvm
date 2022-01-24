@@ -291,6 +291,12 @@ TVM_REGISTER_TARGET_KIND("cuda", kDLCUDA)
     .add_attr_option<Integer>("thread_warp_size", Integer(32))
     .add_attr_option<Integer>("registers_per_block")
     .add_attr_option<Integer>("max_num_threads", Integer(1024))  // TODO(@zxybazh): deprecate it
+     // If set, the BYOC toolchain name this target is specialized to.
+     // The toolchain name must match that attached to "Primitive" functions intended
+     // to be lowered/codegened by an external BYOC toolchain, using the 'ext.relay.<toolchain>'
+     // registered global function.
+     // It may also match a registered pattern table.
+    .add_attr_option<String>("compiler")
     .set_default_keys({"cuda", "gpu"})
     .set_attrs_preprocessor(UpdateCUDAAttrs);
 

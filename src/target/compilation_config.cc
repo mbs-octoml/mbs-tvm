@@ -236,6 +236,51 @@ CompilationConfig::CompilationConfig(const transform::PassContext& pass_ctx,
   data_ = std::move(node);
 }
 
+CompilationConfig::CompilationConfig(const transform::PassContext& pass_ctx,
+                                     Array<Target> targets) {
+  VLOG_CONTEXT << "CompilationConfig";
+
+  auto node = make_object<CompilationConfigNode>();
+
+  for (const auto& target : targets) {
+    VLOG(0) << "Available primitive target " << target->ToDebugString();
+  }
+
+  // Capture the arguments in our preferred representation.
+  node->primitive_targets = std::move(targets);
+  node->host_target = NullValue<Target>();
+
+  // Complete the targets vector and establish default scopes. After this primitive_targets will
+  // contain the definitive list of all required targets, target_host will be defined, and
+  // all primitive targets will have host target_host.
+  node->EstablishDefaultVirtualDevices(pass_ctx);
+
+  // LEGACY: Reconstruct the target map from all the primitive targets.
+  // Note that we require pointer equality between targets in legacy_target_map and
+  // primitive_targets.
+  for (const auto& primitive_target : node->primitive_targets) {
+    node->legacy_target_map.Set(Integer(primitive_target->kind->device_type), primitive_target);
+  }
+
+  ICHECK(node->default_primitive_virtual_device->target.defined());
+  ICHECK(node->host_virtual_device->target.defined());
+  ICHECK_GT(node->primitive_targets.size(), 0U);
+
+  // Legacy: Some passes only support homogenous compilation and expect the target to be
+  // given by the global target context. Make this easy to detect.
+  node->optional_homogeneous_target =
+      node->legacy_target_map.size() == 1 ? (*node->legacy_target_map.begin()).second : Target();
+
+  for (const auto& target : node->primitive_targets) {
+    VLOG(1) << "Target " << target->ToDebugString() << " of device type "
+            << target->kind->device_type << " is available for primitives";
+  }
+  VLOG(1) << "Using default primitive virtual device " << node->default_primitive_virtual_device;
+  VLOG(1) << "Using host virtual device " << node->host_virtual_device;
+
+  data_ = std::move(node);
+}
+
 TVM_REGISTER_GLOBAL("target.MakeCompilationConfig")
     .set_body_typed([](const transform::PassContext& pass_ctx, TargetMap legacy_target_map,
                        Target optional_host_target) -> CompilationConfig {

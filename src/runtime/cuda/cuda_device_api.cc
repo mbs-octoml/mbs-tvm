@@ -118,20 +118,22 @@ class CUDADeviceAPI final : public DeviceAPI {
       CUDA_CALL(cudaSetDevice(dev.device_id));
       size_t free_mem, total_mem;
       CUDA_CALL(cudaMemGetInfo(&free_mem, &total_mem));
-      VLOG(1) << "allocating " << nbytes << " bytes on device, with " << free_mem
-              << " bytes currently free out of " << total_mem << " bytes available";
+      VLOG(1) << "allocating " << nbytes << " bytes on device " << dev.device_id << " with "
+              << free_mem << " bytes currently free out of " << total_mem << " bytes available";
       CUDA_CALL(cudaMalloc(&ret, nbytes));
     }
+    VLOG(1) << "allocated at " << std::hex << reinterpret_cast<size_t>(ret);
     return ret;
   }
 
   void FreeDataSpace(Device dev, void* ptr) final {
     if (dev.device_type == kDLCUDAHost) {
-      VLOG(1) << "freeing host memory";
+      VLOG(1) << "freeing host memory at " << std::hex << reinterpret_cast<size_t>(ptr);
       CUDA_CALL(cudaFreeHost(ptr));
     } else {
       CUDA_CALL(cudaSetDevice(dev.device_id));
-      VLOG(1) << "freeing device memory";
+      VLOG(1) << "freeing device " << dev.device_id << " memory at " << std::hex
+              << reinterpret_cast<size_t>(ptr);
       CUDA_CALL(cudaFree(ptr));
     }
   }

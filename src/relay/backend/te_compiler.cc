@@ -773,7 +773,7 @@ class LowerTensorExprMutator : public DeviceAwareExprMutator {
     } else {
       // The target corresponding to the call_node expression's annotation.
       VirtualDevice virtual_device = GetVirtualDevice(GetRef<Call>(call_node));
-      ICHECK(!virtual_device->IsFullyUnconstrained());
+      ICHECK(!virtual_device->IsFullyUnconstrained()) << PrettyPrint(GetRef<Call>(call_node));
       target = virtual_device->target;
       ICHECK(target.defined());
     }

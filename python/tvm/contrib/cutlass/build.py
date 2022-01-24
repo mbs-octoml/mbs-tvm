@@ -22,6 +22,7 @@ import multiprocessing
 import tvm
 from tvm import runtime, relay
 from tvm.contrib.nvcc import get_cuda_version
+from tvm._ffi.registry import register_func
 from .gen_gemm import CutlassGemmProfiler
 from .gen_conv2d import CutlassConv2DProfiler
 from .library import ConvKind
@@ -77,7 +78,7 @@ class OpAnnotator(tvm.relay.ExprVisitor):
 
     def visit_call(self, call):
         op = call.op
-        if isinstance(op, relay.Function) and "PartitionedFromPattern" in op.attrs:
+        if isinstance(op, relay.Function) and "Composite" in op.attrs:
             self.signature["op_type"] = op.attrs["Composite"]
             for i, arg in enumerate(op.params):
                 self.signature["arg%d_shape" % i] = arg.checked_type.shape
@@ -94,18 +95,18 @@ class OpAnnotator(tvm.relay.ExprVisitor):
 
 
 def select_gemm_kernel(
-    cutlass_profiler,
-    op_type,
-    MM,
-    KK,
-    NN,
-    out_dtype,
-    arg0_dtype,
-    arg1_dtype,
-    use_3xtf32,
-    batched,
-    find_first_valid,
-    use_multiprocessing,
+        cutlass_profiler,
+        op_type,
+        MM,
+        KK,
+        NN,
+        out_dtype,
+        arg0_dtype,
+        arg1_dtype,
+        use_3xtf32,
+        batched,
+        find_first_valid,
+        use_multiprocessing,
 ):
     """Run CUTLASS profiler to select the best kernel, or return the default one for dynamic
     workloads."""
@@ -138,16 +139,16 @@ def select_gemm_kernel(
 
 
 def handle_batch_matmul(
-    cutlass_profiler,
-    op_type,
-    arg0_shape,
-    arg1_shape,
-    out_dtype,
-    arg0_dtype,
-    arg1_dtype,
-    use_3xtf32,
-    find_first_valid,
-    use_multiprocessing,
+        cutlass_profiler,
+        op_type,
+        arg0_shape,
+        arg1_shape,
+        out_dtype,
+        arg0_dtype,
+        arg1_dtype,
+        use_3xtf32,
+        find_first_valid,
+        use_multiprocessing,
 ):
     """Profile and select a kernel for batch_matmul op workload."""
     MM = arg0_shape[1]
@@ -183,16 +184,16 @@ def handle_batch_matmul(
 
 
 def handle_dense(
-    cutlass_profiler,
-    op_type,
-    arg0_shape,
-    arg1_shape,
-    out_dtype,
-    arg0_dtype,
-    arg1_dtype,
-    use_3xtf32,
-    find_first_valid,
-    use_multiprocessing,
+        cutlass_profiler,
+        op_type,
+        arg0_shape,
+        arg1_shape,
+        out_dtype,
+        arg0_dtype,
+        arg1_dtype,
+        use_3xtf32,
+        find_first_valid,
+        use_multiprocessing,
 ):
     """Profile and select a kernel for dense op workload."""
     MM = arg0_shape[0]
@@ -226,21 +227,21 @@ def handle_dense(
 
 
 def handle_conv2d(
-    cutlass_profiler,
-    op_type,
-    d_shape,
-    w_shape,
-    padding,
-    strides,
-    dilation,
-    out_dtype,
-    data_dtype,
-    weight_dtype,
-    use_3xtf32,
-    split_k_slices,
-    profile_all_alignments,
-    find_first_valid,
-    use_multiprocessing,
+        cutlass_profiler,
+        op_type,
+        d_shape,
+        w_shape,
+        padding,
+        strides,
+        dilation,
+        out_dtype,
+        data_dtype,
+        weight_dtype,
+        use_3xtf32,
+        split_k_slices,
+        profile_all_alignments,
+        find_first_valid,
+        use_multiprocessing,
 ):
     """Profile and select a kernel for conv2d op workload."""
     if "conv2d_transpose" in op_type:
@@ -286,14 +287,14 @@ def handle_conv2d(
 
 
 def tune_cutlass_kernels(
-    mod,
-    sm,
-    use_3xtf32=True,
-    split_k_slices=[1],
-    profile_all_alignments=False,
-    find_first_valid=False,
-    use_multiprocessing=False,
-    tmp_dir="./tmp",
+        mod,
+        sm,
+        use_3xtf32=True,
+        split_k_slices=[1],
+        profile_all_alignments=False,
+        find_first_valid=False,
+        use_multiprocessing=False,
+        tmp_dir="./tmp",
 ):
     """Given a module partitioned for CUTLASS offloading, profile each workload to select which
     kernels to emit.
@@ -340,110 +341,126 @@ def tune_cutlass_kernels(
     num_cutlass_partition : int
         The number of partitioned functions created for CUTLASS.
     """
-    gemm_profiler = CutlassGemmProfiler(sm, _get_cutlass_path(), tmp_dir)
-    conv2d_profiler = CutlassConv2DProfiler(sm, _get_cutlass_path(), tmp_dir)
     num_cutlass_partition = 0
     for var in mod.get_global_vars():
         fun_name = var.name_hint
         func = mod[fun_name]
-        annotator = OpAnnotator()
         if "cutlass" in fun_name:
             num_cutlass_partition += 1
-            annotator.visit(func)
-            out_shape = annotator.signature["ret_shape"]
-            out_dtype = annotator.signature["ret_dtype"]
-            op_type = annotator.signature["op_type"]
-
-            new_attrs = {"op_type": op_type}
-            new_attrs.update(annotator.signature)
-            new_attrs.update(func.attrs)
-            arg0_shape = new_attrs["arg0_shape"]
-            arg1_shape = new_attrs["arg1_shape"]
-            arg0_dtype = new_attrs["arg0_dtype"]
-            arg1_dtype = new_attrs["arg1_dtype"]
-
-            if "conv2d" in op_type:
-                new_attrs["padding"] = annotator.op_attrs.padding
-                new_attrs["strides"] = annotator.op_attrs.strides
-                new_attrs["dilation"] = annotator.op_attrs.dilation
-
-                if "conv2d_transpose" in op_type:
-                    d_shape = out_shape
-                    w_shape = arg1_shape
-                elif "conv2d_backward_weight" in op_type:
-                    d_shape = arg1_shape
-                    w_shape = out_shape
-                else:
-                    d_shape = arg0_shape
-                    w_shape = arg1_shape
-
-                new_attrs.update(
-                    handle_conv2d(
-                        conv2d_profiler,
-                        op_type,
-                        d_shape,
-                        w_shape,
-                        annotator.op_attrs.padding,
-                        annotator.op_attrs.strides,
-                        annotator.op_attrs.dilation,
-                        out_dtype,
-                        arg0_dtype,
-                        arg1_dtype,
-                        use_3xtf32,
-                        split_k_slices,
-                        profile_all_alignments,
-                        find_first_valid,
-                        use_multiprocessing,
-                    )
-                )
-            elif "batch_matmul" in op_type:
-                new_attrs.update(
-                    handle_batch_matmul(
-                        gemm_profiler,
-                        op_type,
-                        arg0_shape,
-                        arg1_shape,
-                        out_dtype,
-                        arg0_dtype,
-                        arg1_dtype,
-                        use_3xtf32,
-                        find_first_valid,
-                        use_multiprocessing,
-                    )
-                )
-            elif "dense" in op_type:
-                new_attrs.update(
-                    handle_dense(
-                        gemm_profiler,
-                        op_type,
-                        arg0_shape,
-                        arg1_shape,
-                        out_dtype,
-                        arg0_dtype,
-                        arg1_dtype,
-                        use_3xtf32,
-                        find_first_valid,
-                        use_multiprocessing,
-                    )
-                )
-            else:
-                raise ValueError("%s unsupported composite" % op_type)
-
-            new_attrs = tvm.ir.make_node("DictAttrs", **new_attrs)
-            new_func = relay.Function(
-                func.params,
-                func.body,
-                ret_type=func.ret_type,
-                type_params=func.type_params,
-                attrs=new_attrs,
-            )
+            new_func = tune_cutlass_function(func, sm, use_3xtf32, split_k_slices, profile_all_alignments,
+                                             find_first_valid, use_multiprocessing, tmp_dir)
             mod.update_func(var, new_func)
 
     return mod, num_cutlass_partition
 
 
+
+@register_func("tvm.relay.contrib.cutlass.tune_cutlass_function")
+def tune_cutlass_function(
+        func,
+        sm,
+        use_3xtf32=True,
+        split_k_slices=[1],
+        profile_all_alignments=False,
+        find_first_valid=False,
+        use_multiprocessing=False,
+        tmp_dir="./tmp",
+):
+    gemm_profiler = CutlassGemmProfiler(sm, _get_cutlass_path(), tmp_dir)
+    conv2d_profiler = CutlassConv2DProfiler(sm, _get_cutlass_path(), tmp_dir)
+    annotator = OpAnnotator()
+    annotator.visit(func)
+    out_shape = annotator.signature["ret_shape"]
+    out_dtype = annotator.signature["ret_dtype"]
+    op_type = annotator.signature["op_type"]
+
+    new_attrs = {"op_type": op_type}
+    new_attrs.update(annotator.signature)
+    new_attrs.update(func.attrs)
+    arg0_shape = new_attrs["arg0_shape"]
+    arg1_shape = new_attrs["arg1_shape"]
+    arg0_dtype = new_attrs["arg0_dtype"]
+    arg1_dtype = new_attrs["arg1_dtype"]
+
+    if "conv2d" in op_type:
+        new_attrs["padding"] = annotator.op_attrs.padding
+        new_attrs["strides"] = annotator.op_attrs.strides
+        new_attrs["dilation"] = annotator.op_attrs.dilation
+
+        if "conv2d_transpose" in op_type:
+            d_shape = out_shape
+            w_shape = arg1_shape
+        elif "conv2d_backward_weight" in op_type:
+            d_shape = arg1_shape
+            w_shape = out_shape
+        else:
+            d_shape = arg0_shape
+            w_shape = arg1_shape
+
+        new_attrs.update(
+            handle_conv2d(
+                conv2d_profiler,
+                op_type,
+                d_shape,
+                w_shape,
+                annotator.op_attrs.padding,
+                annotator.op_attrs.strides,
+                annotator.op_attrs.dilation,
+                out_dtype,
+                arg0_dtype,
+                arg1_dtype,
+                use_3xtf32,
+                split_k_slices,
+                profile_all_alignments,
+                find_first_valid,
+                use_multiprocessing,
+            )
+        )
+    elif "batch_matmul" in op_type:
+        new_attrs.update(
+            handle_batch_matmul(
+                gemm_profiler,
+                op_type,
+                arg0_shape,
+                arg1_shape,
+                out_dtype,
+                arg0_dtype,
+                arg1_dtype,
+                use_3xtf32,
+                find_first_valid,
+                use_multiprocessing,
+            )
+        )
+    elif "dense" in op_type:
+        new_attrs.update(
+            handle_dense(
+                gemm_profiler,
+                op_type,
+                arg0_shape,
+                arg1_shape,
+                out_dtype,
+                arg0_dtype,
+                arg1_dtype,
+                use_3xtf32,
+                find_first_valid,
+                use_multiprocessing,
+            )
+        )
+    else:
+        raise ValueError("%s unsupported composite" % op_type)
+
+    new_attrs = tvm.ir.make_node("DictAttrs", **new_attrs)
+    return relay.Function(
+        func.params,
+        func.body,
+        ret_type=func.ret_type,
+        type_params=func.type_params,
+        attrs=new_attrs,
+    )
+
+
 def build_cutlass_kernels(
-    lib, sm, tmp_dir="./tmp", lib_path="compile.so", threads=-1, use_fast_math=False
+        lib, sm, tmp_dir="./tmp", lib_path="compile.so", threads=-1, use_fast_math=False
 ):
     """Compile CUTLASS kernels in lib and return the runtime module ready to run.
 
@@ -480,13 +497,13 @@ def build_cutlass_kernels(
 
 
 def build_cutlass_kernels_vm(
-    vm_exec,
-    sm,
-    tmp_dir="./tmp",
-    lib_path="compile.so",
-    vmcode_path="vmcode.ro",
-    threads=-1,
-    use_fast_math=False,
+        vm_exec,
+        sm,
+        tmp_dir="./tmp",
+        lib_path="compile.so",
+        vmcode_path="vmcode.ro",
+        threads=-1,
+        use_fast_math=False,
 ):
     """Compile CUTLASS kernels in vm_exec and return a VM executable ready to run.
 

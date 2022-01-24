@@ -51,6 +51,8 @@
 #include "../../op/annotation/annotation.h"
 #include "../../op/memory/device_copy.h"
 #include "../../op/op_common.h"
+#include "../../collage/collage_fuse_ops.h"
+#include "../../collage/capture_index_in_spans.h"
 #include "../../transforms/device_aware_visitors.h"
 #include "../../transforms/pass_utils.h"
 #include "../utils.h"
@@ -826,8 +828,8 @@ class VMFunctionCompiler : DeviceAwareExprFunctor<void(const Expr& n)> {
 PackedFunc VMCompiler::GetFunction(const std::string& name, const ObjectPtr<Object>& sptr_to_self) {
   if (name == "lower") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-      ICHECK_EQ(args.num_args, 3);
-      this->Lower(args[0], args[1], args[2]);
+      ICHECK_EQ(args.num_args, 2);
+      this->Lower(args[0], args[1]);
     });
   } else if (name == "codegen") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
@@ -854,8 +856,8 @@ PackedFunc VMCompiler::GetFunction(const std::string& name, const ObjectPtr<Obje
     });
   } else if (name == "optimize") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-      ICHECK_EQ(args.num_args, 3);
-      *rv = this->OptimizeModule(args[0], args[1], args[2]);
+      ICHECK_EQ(args.num_args, 2);
+      *rv = this->OptimizeModule(args[0], args[1]);
     });
   } else {
     LOG(FATAL) << "Unknown packed function: " << name;
@@ -867,10 +869,10 @@ void VMCompiler::SetParam(const std::string& name, runtime::NDArray data_in) {
   params_[name] = data_in;
 }
 
-void VMCompiler::Lower(IRModule mod, TargetMap targets, tvm::Target target_host) {
+void VMCompiler::Lower(IRModule mod, Array<Target> targets) {
   VLOG_CONTEXT << "VM Lower";
   exec_ = make_object<Executable>();
-  config_ = CompilationConfig(PassContext::Current(), std::move(targets), std::move(target_host));
+  config_ = CompilationConfig(PassContext::Current(), std::move(targets));
 
   // The first device is always for the host.
   CHECK(context_.virtual_devices_.empty());
@@ -1021,9 +1023,8 @@ transform::Sequential VMCompiler::FuseAndLowerOperators(const VirtualDevice& hos
   return transform::Sequential(std::move(pass_seqs));
 }
 
-IRModule VMCompiler::OptimizeModule(IRModule mod, const TargetMap& targets,
-                                    const Target& target_host) {
-  config_ = CompilationConfig(PassContext::Current(), targets, target_host);
+IRModule VMCompiler::OptimizeModule(IRModule mod, Array<Target> targets) {
+  config_ = CompilationConfig(PassContext::Current(), targets);
   // The first device always corresponds to the host.
   CHECK(context_.virtual_devices_.empty());
   context_.virtual_devices_.push_back(config_->host_virtual_device);
@@ -1047,8 +1048,13 @@ IRModule VMCompiler::OptimizeModuleImpl(IRModule mod) {
       /*is_homogenous=*/config_->optional_homogeneous_target.defined(), /*is_vm=*/true);
 
   // Always plan devices so the remaining passes don't need to distinguish homogeneous vs
-  // hetrogeneous execution.
+  // heterogeneous execution.
   pass_seqs.push_back(transform::PlanDevices(config_));
+
+  // ############# Collage ###############
+  pass_seqs.push_back(collage::CaptureIndexInSpans());
+  pass_seqs.push_back(collage::CollageFuseOps(config_));
+  // #####################################
 
   pass_seqs.push_back(transform::FuseOps());
 

@@ -41,24 +41,40 @@ using tir::BijectiveLayoutNode;
 using tir::Layout;
 using tir::LayoutAxis;
 
-/*! \brief operator pattern used in graph fusion */
+/*!
+ * \brief Operator pattern used to guide fusion.
+ *
+ *
+ *
+ */
 enum OpPatternKind {
-  // Elementwise operation
+  // Elementwise operator, eg relu.
+  // \code
+  //   out[i, j, k] = op(in[i, j, k])
+  // \endcode
+  // The underlying scalar op can always be moved to the point the input tensor was created.
   kElemWise = 0,
-  // Broadcasting operator, can always map output axis to the input in order.
-  // for example :code:`out[i, ax1, j, ax2] = input[i, j]`.
-  // Note that the axis need to be in order so transpose is not a bcast operator.
+  // Broadcasting operator, eg add.
+  // As for kElemWise, but some output axes may be broadcasted, and the remaining must correspond
+  // to input axes in order.
+  // \code
+  //   out[i, j, k] = op(in[i, j])
+  // \endcode
+  // (So transpose is not a kBroadcast).
   kBroadcast = 1,
-  // Injective operator, can always injectively map output axis to a single input axis.
-  // All injective operator can still be safely fused to injective and reduction.
+  // Injective operator, eg concat.
+  // Can always injectively map output axis to a single input axis.
+  // All kInjecting operators can be fused to kInjective and kCommReduce operators.
+  // Eg: concatenate
   kInjective = 2,
-  // Communicative reduction operator.
+  // Communicative reduction operator, eg sum.
   kCommReduce = 3,
-  // Complex operation, can still fuse elemwise operations into its output.
-  // but cannot chain another complex op
+  // Complex operation, eg conv2d. Often called the fused sub-graph's 'anchor node'.
+  // Can fuse kElemWise operations into its output, but cannot fuse additional kOutEWiseFusable
+  // operations.
   kOutEWiseFusable = 4,
-  // The pattern for tuple nodes. Can fuse into subsequent injective ops,
-  // but treated specially
+  // A tuple.
+  // Can fuse into subsequent injective ops, but treated specially.
   kTuple = 7,
   // Opaque operation, cannot fuse anything.
   kOpaque = 8

@@ -298,8 +298,8 @@ class TensorRTRuntime : public JSONRuntimeBase {
       }
     }
 
-    LOG(INFO) << "Finished building TensorRT engine for subgraph " << symbol_name_
-              << " with batch size " << batch_size;
+    VLOG(1) << "Finished building TensorRT engine for subgraph " << symbol_name_
+            << " with batch size " << batch_size;
     CacheEngineToDisk();
     return trt_engine_cache_.at(std::make_pair(symbol_name_, batch_size));
   }

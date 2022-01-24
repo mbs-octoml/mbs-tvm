@@ -49,12 +49,13 @@ namespace contrib {
 using JSONGraphNode = tvm::runtime::json::JSONGraphNode;
 
 /*!
- * \brief An input to a op may be either kTensor in the case of nvinfer::ITensor*
- * or kWeight for nvinfer1::Weights.
+ * \brief An input to a op may be either kTensor in the case of nvinfer::ITensor*,
+ * a kWeight for nvinfer1::Weights, or ignored (eg for the nn.pad value).
  */
 enum TensorRTInputType {
   kTensor,
   kWeight,
+  kIgnored
 };
 
 /*!
@@ -106,6 +107,8 @@ struct TensorRTOpConverterParams {
 /*! \brief Base class for an op converter from Relay to TRT. */
 class TensorRTOpConverter {
  public:
+  virtual ~TensorRTOpConverter() =  default;
+
   /*! \brief Used to specify whether each input is tensor or weight. */
   const std::vector<TensorRTInputType> input_types;
   /*! \brief If set to true, any number of tensor inputs can be used for the op.
