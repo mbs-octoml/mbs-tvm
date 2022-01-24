@@ -306,7 +306,7 @@ _register_external_op_helper_with_checker("prod", reduce_annotate_fn)
 _register_external_op_helper_with_checker("max", reduce_annotate_fn)
 _register_external_op_helper_with_checker("min", reduce_annotate_fn)
 _register_external_op_helper_with_checker("mean", reduce_annotate_fn)
-
+_register_external_op_helper_with_checker("variance", reduce_annotate_fn)
 
 def trt_version_annotate_fn(version):
     """Helper for ops which require a minimum TRT version"""
@@ -414,6 +414,9 @@ def conv2d_annotate_fn(expr):  # pylint: disable=unused-variable
 
     attrs, args = expr.attrs, expr.args
     if not is_supported_trt_dtype(args):
+        return False
+    if not isinstance(args[1], Constant):
+        logger.info("nn.conv2d: kernel argument must be constant.")
         return False
     if attrs.data_layout != "NCHW":
         logger.info("nn.conv2d: data_layout is %s but must be NCHW.", attrs.data_layout)
@@ -741,7 +744,9 @@ def pad_annotate_fn(expr):  # pylint: disable=unused-variable
     if not is_supported_trt_dtype(args):
         return False
     pad_value = args[1]
-    assert isinstance(pad_value, relay.Constant)
+    if not isinstance(pad_value, relay.Constant):
+        logger.info("nn.pad: pad argument must be constant")
+        return False
     pad_value = pad_value.data.numpy().item()
     if attrs.pad_mode != "constant":
         logger.info("nn.pad: pad mode is %s but must be constant.", attrs.pad_mode)

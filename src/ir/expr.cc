@@ -24,6 +24,7 @@
 #include <tvm/ir/expr.h>
 #include <tvm/ir/function.h>
 #include <tvm/runtime/registry.h>
+
 // NOTE: reverse dependency on top/tir.
 // These dependencies do not happen at the interface-level,
 // and are only used in minimum cases where they are clearly marked.
@@ -141,10 +142,11 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
       p->stream << "range(min=" << op->min << ", ext=" << op->extent << ')';
     });
 
-GlobalVar::GlobalVar(String name_hint, Type type) {
+GlobalVar::GlobalVar(String name_hint, Type type, Span span) {
   ObjectPtr<GlobalVarNode> n = make_object<GlobalVarNode>();
   n->name_hint = std::move(name_hint);
   n->checked_type_ = std::move(type);
+  n->span = std::move(span);
   data_ = std::move(n);
 }
 

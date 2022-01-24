@@ -116,7 +116,7 @@ class VMCompiler : public runtime::ModuleNode {
    *                to target mapping. For homogeneous compilation, it is a singleton build target.
    * \param target_host Host compilation target, if target is device.
    */
-  void Lower(IRModule mod, TargetMap targets, Target target_host);
+  void Lower(IRModule mod, Array<Target> targets);
 
   /*! \brief Generate the machine code for lowered functions. */
   void Codegen();
@@ -132,7 +132,7 @@ class VMCompiler : public runtime::ModuleNode {
    *
    * \return The optimized IRModule.
    */
-  IRModule OptimizeModule(IRModule mod, const TargetMap& targets, const Target& target_host);
+  IRModule OptimizeModule(IRModule mod, Array<Target> targets);
 
   IRModule OptimizeModuleImpl(IRModule mod);
 

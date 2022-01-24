@@ -61,8 +61,17 @@ Doc RelayTextPrinter::PrintOptionalInfo(const Expr& expr) {
   }
   // default annotations
   if (annotate_ == nullptr) {
-    if ((expr.as<ConstantNode>() || expr.as<CallNode>()) && expr->checked_type_.defined()) {
-      doc << " /* ty=" << Print(expr->checked_type()) << " */";
+    if ((expr.as<ConstantNode>() || expr.as<CallNode>() || expr.as<VarNode>() ||
+         expr.as<FunctionNode>()) &&
+        (expr->checked_type_.defined() || expr->span.defined())) {
+      doc << " /*";
+      if (expr->checked_type_.defined()) {
+        doc << " ty=" << Print(expr->checked_type());
+      }
+      if (expr->span.defined()) {
+        doc << " span=" << PrintSpan(expr->span);
+      }
+      doc << " */";
     }
   } else {
     std::string annotated_expr = annotate_(expr);
@@ -219,7 +228,7 @@ Doc RelayTextPrinter::AllocVar(const Var& var) {
     name = "v" + name;
   }
   Doc val = GetUniqueName("%" + name);
-  memo_[var] = val;
+  memo_[var] = val; // Referential occurrences will not include the following.
   if (!var->virtual_device()->IsFullyUnconstrained()) {
     val << " {" << kVirtualDevice << "=" << PrintAttributeValue(var->virtual_device()) << "}";
   }
@@ -540,9 +549,6 @@ Doc RelayTextPrinter::VisitExpr_(const CallNode* op) {
     return doc;
   } else {
     doc << "(" << Doc::Concat(args) << ")";
-    if (op->span.defined()) {
-      doc << " /* " << PrintSpan(op->span) << " */";
-    }
     return doc;
   }
 }
@@ -977,7 +983,7 @@ Doc RelayTextPrinter::PrintSpan(const Span& span) {
   Doc doc;
   const auto* span_node = span.as<SpanNode>();
   ICHECK(span_node);
-  doc << span_node->source_name->name;
+  doc << span_node->source_name->name << ":" << span_node->line << ":" << span_node->column;
   return doc;
 }
 

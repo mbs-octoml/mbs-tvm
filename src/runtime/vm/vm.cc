@@ -257,6 +257,7 @@ void VirtualMachine::SetOneInput(std::string func_name, const TVMArgValue& tag,
   } else {
     LOG(FATAL) << "The type of input tensor tag (" << tag.type_code()
                << ") doesn't match integer or string";
+    inp_index = 0;
   }
   ICHECK_LT(inp_index, params_num);
 
@@ -356,11 +357,11 @@ void VirtualMachine::InvokeGlobal(const VMFunction& func, const std::vector<Obje
 }
 
 ObjectRef VirtualMachine::Invoke(const VMFunction& func, const std::vector<ObjectRef>& args) {
-  DLOG(INFO) << "Executing Function: " << std::endl << func;
+  VLOG(1) << "Executing Function: " << std::endl << func;
   for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
-    DLOG(INFO) << "Device " << i << " has device type " << devices_[i].device_type
-               << " and device id " << devices_[i].device_id
-               << (i == exec_->host_device_index ? " (using as host device)" : "");
+    VLOG(1) << "Device " << i << " has device type " << devices_[i].device_type << " and device id "
+            << devices_[i].device_id
+            << (i == exec_->host_device_index ? " (using as host device)" : "");
   }
 
   InvokeGlobal(func, args);

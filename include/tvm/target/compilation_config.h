@@ -171,6 +171,8 @@ class CompilationConfig : public ObjectRef {
   TVM_DLL CompilationConfig(const transform::PassContext& pass_ctx, TargetMap legacy_target_map_arg,
                             Target optional_host_target_arg);
 
+  TVM_DLL CompilationConfig(const transform::PassContext& pass_ctx, Array<Target> targets);
+
   TVM_DEFINE_OBJECT_REF_METHODS(CompilationConfig, ObjectRef, CompilationConfigNode);
 };
 

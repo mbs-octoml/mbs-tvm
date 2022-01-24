@@ -52,6 +52,8 @@ class PooledAllocator final : public Allocator {
       auto&& pool = it->second;
       auto ret = pool.back();
       pool.pop_back();
+      VLOG(1) << "reusing buffer of " << ret.size << " bytes at " <<
+          std::hex << reinterpret_cast<size_t>(ret.data);
       return ret;
     }
     Buffer buf;
@@ -67,7 +69,9 @@ class PooledAllocator final : public Allocator {
     }
 
     used_memory_.fetch_add(size, std::memory_order_relaxed);
-    VLOG(1) << "allocate " << size << " B, used memory " << used_memory_ << " B";
+    VLOG(1) << "allocated " << size << " bytes at " << std::hex
+            << reinterpret_cast<size_t>(buf.data) << std::dec << ", total used memory is now "
+            << used_memory_ << " bytes";
     return buf;
   }
 
@@ -77,7 +81,8 @@ class PooledAllocator final : public Allocator {
       memory_pool_.emplace(buffer.size, std::vector<Buffer>{});
     }
     memory_pool_.at(buffer.size).push_back(buffer);
-    VLOG(1) << "reclaim buffer " << buffer.size;
+    VLOG(1) << "reclaiming buffer of " << buffer.size << " bytes at " << std::hex
+            << reinterpret_cast<size_t>(buffer.data);
   }
 
   size_t UsedMemory() const override { return used_memory_.load(std::memory_order_relaxed); }
@@ -88,12 +93,14 @@ class PooledAllocator final : public Allocator {
     for (auto const& it : memory_pool_) {
       auto const& pool = it.second;
       for (auto const& buf : pool) {
+        VLOG(1) << "freeing " << buf.size << " bytes at " << std::hex
+                << reinterpret_cast<size_t>(buf.data);
         DeviceAPI::Get(buf.device)->FreeDataSpace(buf.device, buf.data);
       }
     }
     memory_pool_.clear();
     used_memory_ = 0;
-    VLOG(1) << "release all buffers";
+    VLOG(1) << "released all buffers";
   }
 
  private:

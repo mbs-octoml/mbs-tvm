@@ -16,7 +16,6 @@
 # under the License.
 import logging
 import math
-import pytest
 import tvm
 from tvm import relay
 from tvm.contrib.cudnn import conv_output_shape
@@ -921,4 +920,7 @@ def test_conv2d_bwd():
 
 
 if __name__ == "__main__":
-    pytest.main([__file__])
+    import sys
+    import pytest
+
+    sys.exit(pytest.main([__file__] + sys.argv[1:]))
