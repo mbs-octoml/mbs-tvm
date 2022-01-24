@@ -418,6 +418,9 @@ def conv2d_annotate_fn(expr):  # pylint: disable=unused-variable
     if not isinstance(args[1], Constant):
         logger.info("nn.conv2d: kernel argument must be constant.")
         return False
+    if not isinstance(args[1], Constant):
+        logger.info("nn.conv2d: kernel argument must be constant.")
+        return False
     if attrs.data_layout != "NCHW":
         logger.info("nn.conv2d: data_layout is %s but must be NCHW.", attrs.data_layout)
         return False
@@ -749,6 +752,10 @@ def pad_annotate_fn(expr):  # pylint: disable=unused-variable
     pad_value = args[1]
     if not isinstance(pad_value, relay.Constant):
         logger.info("nn.pad: pad argument must be constant")
+        return False
+    pad_value = pad_value.data.numpy().item()
+    if any([x.checked_type.dtype != "float32" for x in args]):
+        logger.info("Only float32 inputs are supported for TensorRT.")
         return False
     pad_value = pad_value.data.numpy().item()
     if attrs.pad_mode != "constant":

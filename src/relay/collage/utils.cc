@@ -24,8 +24,6 @@
 
 #include "./utils.h"
 
-#include "../op/memory/device_copy.h"
-
 namespace tvm {
 namespace relay {
 namespace collage {
@@ -93,41 +91,6 @@ bool CanInline(const Expr& expr) {
   }
   if (const auto* constant_node = expr.as<ConstantNode>()) {
     return IsSimpleScalar(constant_node);
-  }
-  return false;
-}
-
-bool IsSpecialOp(const OpNode* op_node) {
-  auto op = GetRef<Op>(op_node);
-  static auto fnoncomputational = Op::GetAttrMap<TNonComputational>("TNonComputational");
-  if (fnoncomputational.count(op) && fnoncomputational[op]) {
-    // Operator has been marked as non-computational.
-    return true;
-  }
-  // TODO(mbs): This is incomplete.
-  static auto shape_of_op_ = Op::Get("shape_of");
-  static auto vm_shape_of_op_ = Op::Get("vm.shape_of");
-  if (op == DeviceCopyOp() || op == shape_of_op_ || op == vm_shape_of_op_) {
-    // Operator is compiled away by the VM compilation flow.
-    return true;
-  }
-  return false;
-}
-
-bool MustBeLowered(const Expr& expr) {
-  if (const auto* call_node = expr.as<CallNode>()) {
-    if (const auto* function_node = call_node->op.as<FunctionNode>()) {
-      if (function_node->HasNonzeroAttr(attr::kPrimitive)) {
-        // We've already committed to this call being to one or more operators which must be
-        // lowered.
-        return true;
-      }
-    } else if (const auto* op_node = call_node->op.as<OpNode>()) {
-      if (!IsSpecialOp(op_node)) {
-        // The VM compilation path won't rewrite this call.
-        return true;
-      }
-    }
   }
   return false;
 }

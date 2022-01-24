@@ -31,7 +31,7 @@
 
 #include "../ir/dataflow_matcher_impl.h"
 #include "../ir/indexed_graph.h"
-#include "./index_set.h"
+#include "index_set.h"
 
 namespace tvm {
 namespace relay {
@@ -72,41 +72,35 @@ struct SubGraphConfig {
    * \brief Maximum allowed maximum depth, or zero if no-limit.
    */
   size_t max_max_depth = 0;
-
-  std::string ToString() const;
 };
 
 using LabelledSubGraphMap = Map<String, ObjectRef /* actually SubGraph */>;
 
 /*!
- * \brief A compact representation of a sub-graph within an (implied) overall Relay expression.
+ * \brief A compact representation of a sub-graph within an (implied) overall Relay expression
+ * (typically the "main" Relay global function). Sub-graphs can be used to represent composite and
+ * fused functions without having to pay the cost of constructing either the function or the
+ * rewritten overall expression calling that function. We also allow functions to be extracted
+ * independently of rewriting the overall expression since measuring candidate kernel performance
+ * does not need the latter.
  *
- * Sub-graphs can be used to represent 'composite'' and 'fused' functions without having to pay
- * the cost of constructing either the function or the rewritten overall 'partitioned' expression
- * which calls that function. We also allow functions to be extracted independently of partitioning,
- * since we'll need to estimate the latency of many more kernel functions than will ultimately be
- * used in the final Relay expression. We expect O(thousands) of sub-graphs to be in flight while
- * processing a given model.
+ * A sub-graph classifies every sub-expression node of the overall expression as either 'inside' or
+ * 'outside' the sub-graph. Not all such divisions make sense: see the \p IsValid method for the
+ * rules, and \p SubGraphConfig for how to customize those rules.
  *
- * A sub-graph classifies every dataflow node of the overall expression as either 'inside' or
- * 'outside' the sub-graph. Obviously not all such divisions make sense, for example it is not
- * valid for an inside node to feed into another inside node via outside nodes. We provide the
- * \p IsValid method to check for validity, and \p SubGraphConfig to control which rules apply
- * (such as maximum depth).
+ * We use post-dfs expression node indexes to uniquely refer to expression nodes.
+ * We expect O(thousands) of sub-graphs to be in flight for a given model, and avoid creating
+ * fused function and partitioned graphs unless absolutely necessary for downstream processing.
+ * Most operations require a \p DataflowGraph and possibly the overall expression, and those
+ * are not kept within the sub-graph to save space.
  *
- * We generally work with the \p DataflowGraph representation of the overall Relay expression
- * rather than the expression itself. We use the post-dfs visit index to uniquely refer to
- * expression nodes.
- *
- * As well as 'inside' and 'outside' we have four other flavors of dataflow nodes (all uniquely
- * determined from the 'inside' nodes):
+ * As well as 'inside' and 'outside' we have four other flavors of sub-expression node:
  *  - 'entry' nodes are those inside with at least one dataflow input outside.
  *  - 'exit' nodes are  those inside with at least one dataflow output outside, or which
  *    are considered 'external' in the underlying dataflow graph (eg because they represent
  *    the result of the overall function).
  *  - 'input' nodes are those outside with at least one dataflow output inside.
  *  - 'output' nodes are those outside with at least one dataflow input inside.
- *
  * It is valid to have multiple entry nodes (we'll bind a parameter for each). It may be valid to
  * have multiple exit nodes (we'll build a tuple of all such). It may be valid to have exit nodes
  * which also contribute to other inside nodes (ie represent a 'top' on an intermediate result).
@@ -116,13 +110,9 @@ using LabelledSubGraphMap = Map<String, ObjectRef /* actually SubGraph */>;
  *  - Wrapping by a label, which indicates the wrapped sub-graph should be extracted as a
  *    sub-function with a "Composite" label.
  *  - Substitution, which allows a sub-graph w.r.t. one dataflow graph to be transformed to
- *    match some other (typically smaller) dataflow graph.
+ *    match some other (typcially smaller) dataflow graph.
  *
  * See the subclasses of \p FusionRule for how sub-graphs are built and combined.
- *
- * To support some of the \p OpPatternKind-based fusion rule processing we give sub-graphs
- * a kind, which is generally the maximum of the kinds of all the operator calls appearing
- * inside it. We also given sub-graphs a label to help debugging.
  */
 class SubGraphNode : public Object {
  public:
@@ -133,12 +123,11 @@ class SubGraphNode : public Object {
   IndexSet inside_;
 
   /*!
-   * \brief Index of first and last inside nodes.
+   * \brief Index of first inside node.
    *
    * Cached for performance, uniquely determined by inside_.
    */
-  PostDfsIndex first_inside_index_ = 0;
-  PostDfsIndex last_inside_index_= 0;
+  PostDfsIndex first_inside_index_;
 
   /*!
    * \brief Which sub-expressions are entry/exit/input/output for this sub-graph.
@@ -235,11 +224,11 @@ class SubGraphNode : public Object {
   Function ExtractFunction(const DataflowGraph& dataflow_graph) const;
 
   /*!
-   * \brief Returns \p expr (which has \p dataflow_graph) rewritten to partition on this
+   * \brief Returns \p expr (with matching \p dataflow_graph) rewritten to partition on this
    * sub-graph. If \p function_override is defined, use that as the extracted function, otherwise
    * use the function which would be returned by \p ExtractFunction above. Obviously if
    * \p function_override is given it must match the \p ExtractFunction function exactly on
-   * arguments, types etc.
+   * argumens, types etc.
    */
   Expr Partition(const DataflowGraph& dataflow_graph, const Expr& expr,
                  const Function& function_override) const;

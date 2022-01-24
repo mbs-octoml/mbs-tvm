@@ -18,7 +18,7 @@
  */
 
 /*!
- * \file src/relay/collage/collage_fuse_ops.cc
+ * \file src/relay/transforms/collage_fuse_ops.cc
  * \brief Search for optimal fused sub-graphs and targets.
  */
 
@@ -33,17 +33,13 @@
 #include <tvm/relay/transform.h>
 #include <tvm/target/target.h>
 
+#include "../collage/cost.h"
 #include "../ir/dataflow_matcher_impl.h"
-#include "./candidate_kernel.h"
-#include "./cost.h"
-#include "./cost_estimator.h"
-#include "./fusion_rule.h"
-#include "./fusion_spec.h"
-#include "./gather_fusion_specs.h"
-#include "./name_supply.h"
-#include "./priority_queue.h"
-#include "./sub_graph.h"
-#include "./utils.h"
+#include "candidate_kernel.h"
+#include "cost_estimator.h"
+#include "fusion_rule.h"
+#include "name_supply.h"
+#include "sub_graph.h"
 
 namespace tvm {
 namespace relay {
@@ -70,18 +66,6 @@ class SearchState {
 
   const IndexSet& covered() const { return covered_; }
 
-  std::string ToString() const {
-    std::ostringstream os;
-    os << "State(";
-    os << "covered=" << covered_.ToString();
-    os << ",best_cost=" << best_cost_.ToString();
-    if (best_candidate_kernel_.defined()) {
-      os << ",best_candidate_kernel=" << best_candidate_kernel_->ToString();
-    }
-    os << ")";
-    return os.str();
-  }
-
  private:
   /*! \brief Which nodes of overall expression have been placed on all paths to this state. */
   IndexSet covered_;
@@ -106,10 +90,38 @@ struct CompareSearchStatePtrs {
   }
 };
 
-struct EqualSearchStatePtrs {
-  bool operator()(const SearchState* left, const SearchState* right) const {
-    return left->covered() == right->covered();
+/*! \brief Priority queue of search states, ordered by increasing cost. */
+class PriorityQueue {
+ public:
+  PriorityQueue() = default;
+
+  /*! \brief Pushes \p state onto the queue. */
+  void Push(SearchState* state) { set_.emplace(state); }
+
+  /*! \brief Pops the state with the least ocst off the queue. */
+  SearchState* Pop() {
+    ICHECK(!set_.empty());
+    SearchState* state = *set_.begin();
+    set_.erase(set_.begin());
+    return state;
   }
+
+  /*! \brief Updates the queue to account for \p state's best cost being lowered. */
+  void Update(SearchState* state) {
+    auto itr = std::find_if(set_.begin(), set_.end(), [&state](const SearchState* s) {
+      return s->covered() == state->covered();
+    });
+    ICHECK(itr != set_.end());
+    set_.erase(itr);
+    set_.emplace(state);
+  }
+
+  bool empty() const { return set_.empty(); }
+  size_t size() const { return set_.size(); }
+
+ private:
+  // TODO(mbs): Use an updatable priority queue.
+  std::set<SearchState*, CompareSearchStatePtrs> set_;
 };
 
 /*!
@@ -125,11 +137,15 @@ class CandidateKernelIndex {
         first_inside_index_to_candidates_(dataflow_graph->size()) {}
 
   /*! \brief Constructs the index. */
-  void Index(const Array<FusionSpec>& fusion_specs) {
+  void Index(const Expr& expr, const std::vector<FusionSpec>& fusion_specs,
+             NameSupply* name_supply) {
     for (const auto& fusion_spec : fusion_specs) {
       VLOG_CONTEXT << "spec " << fusion_spec->spec_name_;
-      Array<CandidateKernel> candidates = fusion_spec->AllCandidateKernels(*dataflow_graph_);
+      Array<CandidateKernel> candidates =
+          fusion_spec->AllCandidateKernels(*dataflow_graph_, name_supply);
+      // For each candidate...
       for (auto& candidate : candidates) {
+        // We now own the candidate
         all_candidate_kernels_.push_back(candidate);
         PostDfsIndex first_inside_index = candidate->sub_graph_->first_inside_index_;
         ICHECK_LT(first_inside_index, dataflow_graph_->size());
@@ -169,60 +185,43 @@ class CandidateKernelIndex {
  */
 class Partitioner {
  public:
-  explicit Partitioner(Array<FusionSpec> fusion_specs) : fusion_specs_(std::move(fusion_specs)) {}
+  explicit Partitioner(CompilationConfig config) : config_(std::move(config)) {}
 
-  Expr Partition(Expr expr) {
+  Expr Partition(const Expr& expr) {
     VLOG_CONTEXT << "Partitioning";
-    // Establish data structures.
-    dataflow_graph_ = CreateIndexedGraph(expr);
-    name_supply_ = std::make_unique<NameSupply>("collage");
-    VLOG(1) << "Created dataflow graph with " << dataflow_graph_->size() << " nodes";
-    CandidateKernelIndex index(dataflow_graph_.get());
-    index.Index(fusion_specs_);
+    std::vector<FusionSpec> fusion_specs = GatherFusionSpecs();
+    VLOG(1) << "Gathered " << fusion_specs.size() << " fusion specs";
+    std::unique_ptr<DataflowGraph> dataflow_graph = CreateIndexedGraph(expr);
+    VLOG(1) << "Creating dataflow graph with " << dataflow_graph->size() << " nodes";
+    // Index all the candidates (which will be owned by the index).
+    CandidateKernelIndex index(dataflow_graph.get());
+    NameSupply name_supply("collage");
+    index.Index(expr, fusion_specs, &name_supply);
     VLOG(1) << "Indexed " << index.size() << " candidate kernels";
-
-    // Setup initial state.
-    SearchState* init_state = GetState(IndexSet(dataflow_graph_->size()));
-    init_state->best_cost_ = Cost::Zero();
-    pq_.Push(init_state);
-
     VLOG(1) << "Commencing search";
+    pq_.Push(GetState(IndexSet(dataflow_graph->size())));
     while (!pq_.empty()) {
       SearchState* curr_state = pq_.Pop();
       VLOG(1) << "Looking at state " << curr_state->covered_.ToString();
       PostDfsIndex next_index = curr_state->covered_.FirstOutsideIndex();
-
-      if (next_index >= dataflow_graph_->size()) {
-        // The entire expression has been explored. Collect the candidates on the optimal path.
-        VLOG(1) << "Finished search, recovering best candidates";
-        VLOG(1) << "----------------------------------------------------------------------";
-        std::vector<CandidateKernel> best_candidates;
-        while (curr_state != init_state) {
-          CandidateKernel candidate = curr_state->best_candidate_kernel_;
-          curr_state = curr_state->pred_state_;
-          ICHECK(curr_state != nullptr);
-          next_index = curr_state->covered_.FirstOutsideIndex();
-          ICHECK_LT(next_index, dataflow_graph_->size());
-          if (candidate.defined()) {
-            VLOG(1) << "Best candidate " << candidate->ToString();
-            best_candidates.emplace_back(candidate);
-          } else {
-            Expr sub_expr = dataflow_graph_->index_to_node(next_index)->ref();
-            VLOG(1) << "VM will execute index " << next_index << " for sub-expression "
-                    << SubExprKindAndLabel(sub_expr).second;
+      if (next_index >= dataflow_graph->size()) {
+        VLOG(1) << "Finished search, recovering least-cost candidates";
+        // The entire expression has been explored. Apply the best kernels walking backwards
+        // from the final state.
+        Expr partitioned = expr;
+        while (curr_state != nullptr) {
+          if (curr_state->best_candidate_kernel_.defined()) {
+            VLOG(1) << "Including best candidate "
+                    << curr_state->best_candidate_kernel_->ToString();
+            partitioned =
+                curr_state->best_candidate_kernel_->Partition(*dataflow_graph, partitioned);
           }
+          curr_state = curr_state->pred_state_;
         }
-        VLOG(1) << "----------------------------------------------------------------------";
-        return CandidateKernel::ParallelPartition(std::move(dataflow_graph_), std::move(expr),
-                                                  std::move(best_candidates));
+        return partitioned;
       }
-
       size_t num_fires = 0;
-      Expr sub_expr = dataflow_graph_->index_to_node(next_index)->ref();
-      VLOG(1) << "Looking at index " << next_index << " for sub-expression "
-              << SubExprKindAndLabel(sub_expr).second;
-
-      // Explore all the outgoing candidates from the current state.
+      VLOG(1) << "Looking at index " << next_index;
       for (const auto& candidate_kernel : index.candidate_kernels_at(next_index)) {
         VLOG(1) << "Considering candidate kernel " << candidate_kernel->ToString();
         if (!candidate_kernel->sub_graph_->inside_.AreDisjoint(curr_state->covered_)) {
@@ -234,23 +233,36 @@ class Partitioner {
         Relax(curr_state, next_state, candidate_kernel);
         ++num_fires;
       }
-
-      if (MustBeLowered(sub_expr)) {
-        ICHECK_GT(num_fires, 0)
-            << "No candidate was found covering sub-expression at index " << next_index
-            << ", suggesting the fusion rules are incomplete for the given targets.";
-      } else {
-        // It is (also) possible to leave this sub-expression to be evaluated by the VM.
-        // We'll assume that evaluation cost is zero.
-        VLOG(1) << "Allowing possibility of current sub-expression being left behind";
+      if (num_fires == 0) {
+        VLOG(1) << "No candidates, skipping node";
         IndexSet next_covered =
-            curr_state->covered_ | IndexSet(dataflow_graph_->size(), {next_index});
+            curr_state->covered_ | IndexSet(dataflow_graph->size(), {next_index});
         SearchState* next_state = GetState(next_covered);
-        Relax(curr_state, next_state, /*candidate=*/{});
+        Relax(curr_state, next_state, /*candidate_kernel=*/{});
       }
     }
-    ICHECK(false) << "should have reached end state in which all sub-expressions are covered";
+    ICHECK(false) << "should have reached state in which all sub-expressions are covered";
     return {};
+  }
+
+  /*!
+   * \brief Returns all the fusion specifications gathered from all targets in the compilation
+   * config.
+   */
+  std::vector<FusionSpec> GatherFusionSpecs() {
+    std::vector<FusionSpec> result;
+    for (const auto& target : config_->primitive_targets) {
+      // We implement this on the python side only so that we can get access to the BYOC
+      // pattern registry. Otherwise for the most part this implementation just bounces right
+      // back into the construction helpers in fusion_rule.cc.
+      static const runtime::PackedFunc* make_fusion_spec =
+          runtime::Registry::Get("tvm.relay.collage.make_fusion_spec");
+      ICHECK(make_fusion_spec);
+      FusionSpec spec = (*make_fusion_spec)(target);
+      VLOG(1) << "using spec:\n" << spec->ToString();
+      result.emplace_back(std::move(spec));
+    }
+    return result;
   }
 
   /*! \brief Returns the unique state corresponding to the \p covered sub-graph. */
@@ -266,82 +278,72 @@ class Partitioner {
   }
 
   /*!
-   * \brief Record that it is possible to reach \p next_state by choosing \p candidate_kernel
-   * in \p curr_state. If the resulting cost is better than the best known so far, update
-   * \p next_state's best cost, predecessor and kernel to match.
+   * \brief Record that it is possible to \p next_state by applying \p candidate_kernel
+   * to \p curr_state. If the resulting cost is better than the best known
+   * so far, update this state's best costs, predecessor and kernel to match.
    */
   void Relax(SearchState* curr_state, SearchState* next_state, CandidateKernel candidate) {
-    Cost candidate_cost = Cost::Zero();
+    Cost candidate_cost;
     if (candidate.defined()) {
-      candidate_cost =
-          candidate->EstimatedCost(*dataflow_graph_, &cost_estimator_, name_supply_.get());
+      candidate_cost = candidate->EstimatedCost(&cost_estimator_);
     }
     Cost new_state_cost = candidate_cost + curr_state->best_cost_;
     const bool is_new = next_state->best_cost_.is_invalid();
     if (is_new || new_state_cost < next_state->best_cost_) {
       next_state->pred_state_ = curr_state;
-      Cost previously_best_cost = next_state->best_cost_;
       next_state->best_cost_ = new_state_cost;
-      CandidateKernel previously_best_candidate_kernel = next_state->best_candidate_kernel_;
-      next_state->best_candidate_kernel_ = std::move(candidate);
+      next_state->best_candidate_kernel_ = candidate;
       if (is_new) {
-        VLOG(1) << "transition " << curr_state->ToString() << " --> " << next_state->ToString()
-                << " (New state)";
         pq_.Push(next_state);
       } else {
-        VLOG(1) << "transition " << curr_state->ToString() << " --> " << next_state->ToString()
-                << " (Beats "
-                << (previously_best_candidate_kernel.defined()
-                        ? previously_best_candidate_kernel->ToString()
-                        : "null")
-                << " of cost " << previously_best_cost.ToString() << ")";
+        VLOG(1) << "Found better path!";
         pq_.Update(next_state);
       }
     } else {
-      VLOG(1) << "transition " << curr_state->ToString() << " --> " << next_state->ToString()
-              << " (Unchanged)";
+      VLOG(1) << "Ignoring more expensive path";
     }
   }
 
  private:
-  std::unique_ptr<DataflowGraph> dataflow_graph_;
-  std::unique_ptr<NameSupply> name_supply_;
-  /*! \brief Available fusion specs to use during search. */
-  Array<FusionSpec> fusion_specs_;
+  /*! \brief Available targets over which to explore. */
+  CompilationConfig config_;
   /*! \brief Cost estimator to use for candidate kernels. */
   CostEstimator cost_estimator_;
   /*! \brief Map from covered sub-graphs to the corresponding state. */
   std::unordered_map<IndexSet, std::unique_ptr<SearchState>, IndexSetHash, IndexSetEqual>
       covered_to_state_;
   /*! \brief Priority queue of states, ordered by increasing cost. */
-  PriorityQueue<SearchState, CompareSearchStatePtrs, EqualSearchStatePtrs> pq_;
+  PriorityQueue pq_;
 };
 
 }  // namespace
 
-transform::Pass CollageFuseOps(const CompilationConfig& compilation_config) {
-  auto pass_func = [=](IRModule mod, transform::PassContext ctxt) {
+transform::Pass CollageFuseOps(CompilationConfig compilation_config) {
+  auto pass_func = [=](Function function, IRModule mod, transform::PassContext ctxt) {
     Optional<Bool> opt_enable = ctxt->GetConfig<Bool>("relay.collage.enable_collage", Bool(false));
     if (!opt_enable.value()) {
       VLOG(1) << "ignoring since collage is disabled";
-      return mod;
+      return function;
     }
-    Array<FusionSpec> fusion_specs = GatherFusionSpecs(compilation_config);
-    VLOG(1) << "Gathered " << fusion_specs.size() << " fusion specs";
-    IRModule out_mod = mod->ShallowCopy();
-    for (const auto& kv : mod->functions) {
-      if (const auto* function_node = AsOptimizableFunctionNode(kv.second)) {
-        auto function = GetRef<Function>(function_node);
-        VLOG(1) << "Partitioning " << kv.first->name_hint << " from:\n" << PrettyPrint(function);
-        collage::Partitioner partitioner(fusion_specs);
-        Function result = Downcast<Function>(partitioner.Partition(function));
-        VLOG(1) << "Partitioned " << kv.first->name_hint << " to:\n" << PrettyPrint(result);
-        out_mod->Add(kv.first, result);
+    // Though nothing goes wrong it's deeply confusing when we attempt to partition when
+    // invoking the compiler to estimate the cost of a candidate kernel. So skip partitioning
+    // entirely if the body of the function is a call to a "Primitive" function.
+    const auto* call_node = function->body.as<CallNode>();
+    if (call_node) {
+      const auto* call_function_node = call_node->op.as<FunctionNode>();
+      if (call_function_node) {
+        if (call_function_node->HasNonzeroAttr(attr::kPrimitive)) {
+          return function;
+        }
       }
     }
-    return out_mod;
+    VLOG(1) << "Partitioning from:\n" << PrettyPrint(function);
+    collage::Partitioner partitioner(compilation_config);
+    Function result = Downcast<Function>(partitioner.Partition(function));
+    VLOG(1) << "Partitioned to:\n" << PrettyPrint(result);
+    return result;
   };
-  return tvm::transform::CreateModulePass(pass_func, /*opt_level=*/0, "CollageFuseOps", {});
+  return transform::CreateFunctionPass(pass_func, /*opt_level=*/0, "CollageFuseOps", {});
 }
 
 }  // namespace collage

@@ -27,7 +27,7 @@
 
 #include <tvm/relay/function.h>
 
-#include "./cost.h"
+#include "cost.h"
 
 namespace tvm {
 namespace relay {

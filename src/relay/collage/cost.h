@@ -41,9 +41,8 @@ namespace collage {
  */
 class Cost {
  public:
-  Cost() = delete;
-
-  static Cost Zero() { return Cost(0.0); }
+  /*! \brief The default zero cost. */
+  Cost() = default;
 
   /*!
    * \brief Returns the distinguished 'invalid' cost signaling a candidate kernel is not supported

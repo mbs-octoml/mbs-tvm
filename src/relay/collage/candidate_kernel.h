@@ -27,10 +27,9 @@
 
 #include <tvm/runtime/container/string.h>
 
-#include "./cost.h"
-#include "./cost_estimator.h"
-#include "./name_supply.h"
-#include "./sub_graph.h"
+#include "cost.h"
+#include "cost_estimator.h"
+#include "sub_graph.h"
 
 namespace tvm {
 namespace relay {
@@ -45,8 +44,13 @@ class CandidateKernelNode : public Object {
  public:
   CandidateKernelNode() = default;
 
-  /*! \brief Combination of all the fusion rule names which produced this candidate. */
+  /*! \brief Name of the fusion rule(s) which produced this candidate. */
   String rule_name_;
+
+  /*!
+   * \brief Priority of the fusion rule(s) which produced this candidate.
+   */
+  int priority_ = 0;
 
   /*! \brief The sub-graph of the overall expression matched by the fusion rule. */
   SubGraph sub_graph_;
@@ -57,20 +61,12 @@ class CandidateKernelNode : public Object {
   ObjectRef /* actually FusionSpec */ spec_;
 
   /*!
-   * \brief The target for which to compile the above function.
-   *
-   * Will be null for intermediate targets, and is only set once a candidate is to be
-   * specialized to a fixed target.
-   */
-  mutable Target target_;
-
-  /*!
    * \brief The Relay "Primitive" function which represents the above sub-graph,
    * including any additional attributes needed to guide lowering and codegen.
    *
-   * Initially null, filled in by EstimateCost.
+   * Initially null, filled in by the FusionSpec processing.
    */
-  mutable Function function_;
+  Function function_;
 
   /*!
    * \brief The cost of the kernel.
@@ -90,19 +86,38 @@ class CandidateKernelNode : public Object {
   std::string fusion_spec_name() const;
 
   /*!
-   * \brief Return the estimated cost of the candidate kernel, using \p cost_estimator if
-   * the cost is not already known. Internally cached.
+   * \brief Returns the target for compiling this candidate.
    */
-  Cost EstimatedCost(const DataflowGraph& dataflow_graph, CostEstimator* cost_estimator,
-                     NameSupply* name_supply) const;
+  Target target() const;
+
+  /*!
+   * \brief Return the estimated cost of the candidate kernel, using \p cost_estimator if
+   * the cost is not already known.
+   */
+  Cost EstimatedCost(CostEstimator* cost_estimator) const;
+
+  /*!
+   * \brief Returns \p expr rewritten to partition the candidate kernel's sub-graph into an
+   * inline "Primitive" function with the appropriate additional annotations.
+   */
+  Expr Partition(const DataflowGraph& dataflow_graph, const Expr& expr) const;
 
   std::string ToString() const;
 };
 
 class CandidateKernel : public ObjectRef {
  public:
-  CandidateKernel(String rule_name, SubGraph sub_graph, ObjectRef /* actually FusionSpec */ spec,
-                  Target target = {});
+  CandidateKernel(String rule_name, int priority, SubGraph sub_graph,
+                  ObjectRef /* actually FusionSpec */ spec, Function function = {}) {
+    auto node = runtime::make_object<CandidateKernelNode>();
+    node->rule_name_ = std::move(rule_name);
+    node->priority_ = priority;
+    node->sub_graph_ = std::move(sub_graph);
+    node->spec_ = std::move(spec);
+    node->function_ = std::move(function);
+    // cost defaults to unknown
+    data_ = std::move(node);
+  }
 
   /*!
    * \brief Returns true if this and \p that candidate could be unioned. The result may not
@@ -123,26 +138,7 @@ class CandidateKernel : public ObjectRef {
   static CandidateKernel DisjointUnion(const DataflowGraph& dataflow_graph,
                                        std::vector<CandidateKernel> candidates);
 
-  /*!
-   * \brief Returns \p expr rewritten to partition according to all the \p candidates
-   * (which must be disjoint).
-   */
-  static Expr ParallelPartition(std::unique_ptr<DataflowGraph> dataflow_graph, Expr expr,
-                                std::vector<CandidateKernel> candidates);
-
   TVM_DEFINE_OBJECT_REF_METHODS(CandidateKernel, ObjectRef, CandidateKernelNode);
-};
-
-struct CandidateKernelHash {
-  size_t operator()(const CandidateKernel& candidate) const {
-    return candidate->sub_graph_->hash();
-  }
-};
-
-struct CandidateKernelEquals {
-  bool operator()(const CandidateKernel& left, const CandidateKernel& right) const {
-    return *left->sub_graph_.get() == *right->sub_graph_.get();
-  }
 };
 
 }  // namespace collage

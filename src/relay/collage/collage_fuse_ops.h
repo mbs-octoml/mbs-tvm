@@ -39,7 +39,7 @@ namespace collage {
  * \brief Explores the space of all possible (sub-graph, target) pairs which cover the
  * model, and appplies the globally optimal choice (assuming kernel costs are additive).
  */
-transform::Pass CollageFuseOps(const CompilationConfig& compilation_config);
+transform::Pass CollageFuseOps(CompilationConfig compilation_config);
 
 }  // namespace collage
 }  // namespace relay

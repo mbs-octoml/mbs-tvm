@@ -139,16 +139,6 @@ size_t IndexSet::FirstInsideIndex() const {
   return bitvec_.size();
 }
 
-size_t IndexSet::LastInsideIndex() const {
-  for (size_t i = bitvec_.size(); i > 0; i--) {
-    const size_t index = i - 1;
-    if (bitvec_[index]) {
-      return index;
-    }
-  }
-  return bitvec_.size();
-}
-
 size_t IndexSet::NextIndex(size_t index) const {
   ICHECK_LT(index, bitvec_.size());
   for (index++; index < bitvec_.size(); index++) {
@@ -215,12 +205,10 @@ std::string IndexSet::ToString() const {
       os << ",";
     }
     os << start;
-    if (end > start + 2) {
+    if (end > start + 1) {
       os << ".." << (end - 1);
-      start = end;
-    } else {
-      ++start;
     }
+    start = end;
   }
   os << "}";
   return os.str();

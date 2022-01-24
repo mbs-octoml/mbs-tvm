@@ -19,7 +19,7 @@
 
 /*!
  * \file src/relay/collage/fusion_rule.h
- * \brief Compositional fusion rules.
+ * \brief Fusion patterns and rules.
  */
 
 #ifndef SRC_RELAY_COLLAGE_FUSION_RULE_H_
@@ -29,8 +29,9 @@
 #include <tvm/relay/expr.h>
 
 #include "../../printer/doc.h"
-#include "./candidate_kernel.h"
-#include "./sub_graph.h"
+#include "candidate_kernel.h"
+#include "name_supply.h"
+#include "sub_graph.h"
 
 namespace tvm {
 namespace relay {
@@ -48,131 +49,7 @@ using TPatternPredicate = TypedPackedFunc<bool(const Expr& matched_sub_expr)>;
  */
 bool DefaultPatternPredicate(const Expr& matched_sub_expr);
 
-/*! \brief Base class of all fusion rules.
- *
- * A \p FusionRule describes how to find a set of \p CandidateKernels for a \p DataflowGraph.
- * The candidates are allowed to overlap, and ultimately it is the job of the Collage
- * fusion searcher to find a selection of candidates which covers the whole Relay expression
- * without overlap. Fusion rules are paired with their \p Target and other 'top level'
- * configuration in a \p FusionSpec below.
- *
- * We provide a set of 'base' fusion rules which produce candidates from the dataflow graph
- * directly. We also provide a set of 'combinator' rules which can produce new candidates
- * from the results of an arbitrary sub-rule or sub-rules. In this way it is possible to
- * combine the fusion rules to express a wide variety of fusion strategies, akin to the way
- * we can combine TVM passes.
- *
- * There may be many thousands of candidates in flight during the fusion search. We take care
- * to defer rewriting any Relay expressions (eg to extract the fused function, or partition
- * the model) until absolutely necessary.
- *
- * The base rules implemented so far:
- *  - \p DFPatternFusionRule: Given a \p DFPattern and expression predicate, produces a candidate
- *    for every sub-graph matched by the pattern and predicate. Unlike the \p PatternRewriter,
- *    candidates are free to overlap. This is the foundation for pattern-based BYOC integrations,
- *    and can be used to write targeted fusion rules as well as find examples of 'composite'
- *    operators.
- *  - \p OpPredicateFusionRule: Given an attribute name, produces a candidate for every call
- *    to a primitive Relay operator where the operator has predicate bound to that attribute which
- *    returns true given the call sub-expression. Generally this will result in a singleton
- *    sub-graph containing only the call, but it may pull in constant arguments to the call
- *    should they be required. This is the foundation for operator-based BYOC integrations,
- *    though we should consider retiring this mechanism in favor of pattern-based alone.
- *  - \p OpCallByKindFusionRule: Uses the "TOpPattern" attribute provided for every Relay
- *    operator to produce a candidate for every call to a 'fusable Relay operator'. This can
- *    be used as the foundation for generic fusion patterns which work over all Relay operators
- *    with particular properties (elementwise, broadcast, injective, reductive, anchor).
- *
- * The combinator rules implemented so far:
- *  - \p CompositeFusionRule: 'Tags' the candidates matched by an arbitrary sub-rule with the
- *    rule name. Tagged sub-graphs are turned into "Primitive" Function with the "Composite"
- *    attribute bound to the tag. This can be used to indicate Relay operators (or groups of
- *    Relay operators) are to be rewritten to specific target-specific operators. This combinator
- *    wraps the \p DFPatternFusionRules for the pattern-based BYOC integrations. However it could
- *    also be used with the default TVM backend, eg to indicate Relay operators should be
- *    replaced with particular external library implementations.
- *  - \p UnionFusionRule: Simply unions all the candidates from all sub-rules together. This is
- *    how a set of, say, \p DFPatternFusionRules can be combined.
- *  - \p CombineByPrimitivesFusionRule: Given a sub-rule and a list of 'primitive' rules, finds all
- *    possible ways of combining the sub-rule candidates to yield even larger candidates.
- *    Note that the sub-rule's candidates may also be included in the results -- that is every
- *    combination of candidates is considered optional. The 'primitive' rules allow combining by
- *    \p OpPatternKinds, and combining the arguments to tuples which themselves are arguments
- *    to Relay operator calls. This rule is intended to mimic the existing TVM \p FuseOps pass,
- *    though: i) all combinations are found, ii) the starting set of candidates can be provided
- *    by any other rule (ie not just \p OpCallByKindFusionRule), and iii) we rely on \p SubGraph
- *    validity checking to weed out infeasible candidates.
- *  - \p OnlyValidFusionRule: Ignore candidates who's sub-graphs are invalid w.r.t. a given
- *    \p SubGraphConfig. This can be used to limit the maximum candidate depth, the number
- *    of independent outputs, whether intermediate 'taps' are allowed, and so on.
- *
- * Though not yet implemented, we'd like to allow a combinator rule which will union candidate
- * based on their 'anchor' operators. This can be used to implement 'vertical' and 'horizontal'
- * fusion on more primitive candidates. Note that the \p SubGraph machinery supports
- * multiple-input and -output sub-graphs and their validation, so horizontal fusion is easy
- * implement.
- *
- * We also have \p MaxCoalesceFusionRule, which eagerly combines 'touching' candidates (ie
- * candidates where the output of one sub-graph can be directly connected to the input of the other
- * sub-graph) to form the largest possible candidate. The idea is once the search has been completed
- * this rule can be used to collapse adjacent kernels intended for the same target.
- *
- * Here's some typical \p FusionRule combinations for different fusion strategies:
- *  - Classic TVM \p FuseOps
- *    \code
- *         OpCallByKindFusionRule
- *                   |
- *                   v
- *     CombineByPrimitivesFusionRule (with default TVM primitive rules)
- *    \endcode
- *
- *  - Classic operator-based BYOC with \p AnnotateTarget/MergeCompilerRegions/PartitionGraph passes:
- *    \code
- *          OpPredicateFusionRule
- *                    |
- *                    v
- *       CombineByPrimitivesFusionRule (with join anything primitive rule)
- *    \endcode
- *
- *  - Classic pattern-based BYOC with \p MergeComposite/AnnotateTarget/PartitionGraph passes:
- *    \code
- *
- *      DFPatternFusionRule(pattern1) ... DFPatternFusionRule(patternn)
- *                 |                                               |
- *                 v                                               v
- *       CompositeFusionRule(label1)  ...  CompositeFusionRule(labeln)
- *                           \                 /
- *                            v               v
- *                             UnionFusionRule
- *                                    |
- *                                    v
- *                     CombineByPrimitivesFusionRule (with join anything primitive rule)
- *    \endcode
- *
- *  - "Just fuse what I tell you to fuse", using \p DFPatterns to directly select candidates:
- *    \code
- *      DFPatternFusionRule(pattern1)  ...  DFPatternFusionRule(patternn)
- *                           \                   /
- *                            v                 v
- *                               UnionFusionRule
- *    \endcode
- *
- *  - "Consider this library implementation for these sub-expressions", using \p DFPatterns to
- *    pick out which Relay operators are supported (note that TVM lowering does not currently
- *    support this):
- *    \code
- *     OpCallByKindFusionRule    DFPatternFusionRule(pattern1) ... DFPatternFusionRule(patternn)
- *                \                            |                                 |
- *                 \                           v                                 v
- *                  \               CompositeFusionRule(label1)  ...  CompositeFusionRule(labeln)
- *                   \                         |                            /
- *                    v                        v                           v
- *                                       UnionFusionRule
- *                                             |
- *                                             v
- *                               CombineByPrimitivesFusionRule (with default TVM primitive rules)
- *   \endcode
- */
+/*! \brief Base class of all fusion rules. */
 class FusionRuleNode : public Object {
  public:
   /*!
@@ -180,14 +57,26 @@ class FusionRuleNode : public Object {
    */
   String rule_name_;
 
-  void VisitAttrs(AttrVisitor* v) { v->Visit("rule_name", &rule_name_); }
+  /*!
+   * \brief Global priority of this rule w.r.t. all others, including for other targets.
+   * Ties between kernels with indistinguishable costs are broken by priority, where higher
+   * wins.
+   */
+  int priority_ = 0;
+
+  void VisitAttrs(AttrVisitor* v) {
+    v->Visit("rule_name", &rule_name_);
+    v->Visit("priority", &priority_);
+  }
 
   /*!
    * \brief Returns all the possible candidate kernels for overall expression corresponding to
-   * \p dataflow_graph. The candidates will have unknown target, function and cost.
+   * \p dataflow_graph for target implied by \p spec. The candidates will have unknown cost
+   * until it is explicitly estimated.
    */
   virtual Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                                     const FusionSpec& spec) const;
+                                                     const FusionSpec& spec,
+                                                     NameSupply* name_supply) const;
 
   std::string ToString() const;
   Doc ToDoc() const;
@@ -197,13 +86,13 @@ class FusionRuleNode : public Object {
 
  public:
   static constexpr const char* _type_key = "relay.collage.FusionRule";
-  static constexpr const uint32_t _type_child_slots = 8;
+  static constexpr const uint32_t _type_child_slots = 7;
   TVM_DECLARE_BASE_OBJECT_INFO(FusionRuleNode, Object);
 };
 
 class FusionRule : public ObjectRef {
  public:
-  FusionRule(String rule_name);
+  FusionRule(String rule_name, int priority);
 
   TVM_DEFINE_OBJECT_REF_METHODS(FusionRule, ObjectRef, FusionRuleNode);
 };
@@ -225,7 +114,8 @@ class DFPatternFusionRuleNode : public FusionRuleNode {
   TPatternPredicate predicate_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec) const override;
+                                             const FusionSpec& spec,
+                                             NameSupply* name_supply) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -235,7 +125,7 @@ class DFPatternFusionRuleNode : public FusionRuleNode {
 
 class DFPatternFusionRule : public FusionRule {
  public:
-  DFPatternFusionRule(String rule_name, DFPattern pattern,
+  DFPatternFusionRule(String rule_name, int priority, DFPattern pattern,
                       TPatternPredicate predicate = DefaultPatternPredicate);
 
   TVM_DEFINE_OBJECT_REF_METHODS(DFPatternFusionRule, FusionRule, DFPatternFusionRuleNode);
@@ -252,7 +142,8 @@ class OpPredicateFusionRuleNode : public FusionRuleNode {
   String attribute_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec) const override;
+                                             const FusionSpec& spec,
+                                             NameSupply* name_supply) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -279,7 +170,7 @@ class OpPredicateFusionRuleNode : public FusionRuleNode {
 
 class OpPredicateFusionRule : public FusionRule {
  public:
-  OpPredicateFusionRule(String rule_name, String attribute);
+  OpPredicateFusionRule(String rule_name, int priority, String attribute);
 
   TVM_DEFINE_OBJECT_REF_METHODS(OpPredicateFusionRule, FusionRule, OpPredicateFusionRuleNode);
 };
@@ -297,7 +188,8 @@ class CompositeFusionRuleNode : public FusionRuleNode {
   FusionRule sub_rule_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec) const override;
+                                             const FusionSpec& spec,
+                                             NameSupply* name_supply) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -307,7 +199,7 @@ class CompositeFusionRuleNode : public FusionRuleNode {
 
 class CompositeFusionRule : public FusionRule {
  public:
-  CompositeFusionRule(String rule_name, FusionRule sub_rule);
+  CompositeFusionRule(String rule_name, int priority, FusionRule sub_rule);
 
   TVM_DEFINE_OBJECT_REF_METHODS(CompositeFusionRule, FusionRule, CompositeFusionRuleNode);
 };
@@ -320,7 +212,8 @@ class UnionFusionRuleNode : public FusionRuleNode {
   Array<FusionRule> sub_rules_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec) const override;
+                                             const FusionSpec& spec,
+                                             NameSupply* name_supply) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -330,33 +223,34 @@ class UnionFusionRuleNode : public FusionRuleNode {
 
 class UnionFusionRule : public FusionRule {
  public:
-  UnionFusionRule(String rule_name, Array<FusionRule> sub_rules);
+  UnionFusionRule(String rule_name, int priority, Array<FusionRule> sub_rules);
 
   TVM_DEFINE_OBJECT_REF_METHODS(UnionFusionRule, FusionRule, UnionFusionRuleNode)
 };
 
 /*!
- * \brief Fusion rule which maximally coalesces (using DisjointUnion) candidate kernels from the
- * given sub-fusion rule.
+ * \brief Fusion rule which coalesces (using DisjointUnion) candidate kernels from the given
+ * sub-fusion rule.
  */
-class MaxCoalesceFusionRuleNode : public FusionRuleNode {
+class CoalesceFusionRuleNode : public FusionRuleNode {
  public:
   FusionRule sub_rule_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec) const override;
+                                             const FusionSpec& spec,
+                                             NameSupply* name_supply) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
-  static constexpr const char* _type_key = "relay.collage.MaxCoalesceFusionRule";
-  TVM_DECLARE_FINAL_OBJECT_INFO(MaxCoalesceFusionRuleNode, FusionRuleNode);
+  static constexpr const char* _type_key = "relay.collage.MaximalFusionRule";
+  TVM_DECLARE_FINAL_OBJECT_INFO(CoalesceFusionRuleNode, FusionRuleNode);
 };
 
-class MaxCoalesceFusionRule : public FusionRule {
+class CoalesceFusionRule : public FusionRule {
  public:
-  MaxCoalesceFusionRule(String rule_name, FusionRule sub_rule);
+  CoalesceFusionRule(String rule_name, int priority, FusionRule sub_rule);
 
-  TVM_DEFINE_OBJECT_REF_METHODS(MaxCoalesceFusionRule, FusionRule, MaxCoalesceFusionRuleNode);
+  TVM_DEFINE_OBJECT_REF_METHODS(CoalesceFusionRule, FusionRule, CoalesceFusionRuleNode);
 };
 
 /*
@@ -365,59 +259,41 @@ class MaxCoalesceFusionRule : public FusionRule {
  * (such as tuples or tuple projection) are selected, and it is up to outer fusion rules to account
  * for them.
  */
-class OpCallByKindFusionRuleNode : public FusionRuleNode {
+class SingletonByKindFusionRuleNode : public FusionRuleNode {
  public:
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec) const override;
+                                             const FusionSpec& spec,
+                                             NameSupply* name_supply) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
-  static constexpr const char* _type_key = "relay.collage.OpCallByKindFusionRule";
-  TVM_DECLARE_FINAL_OBJECT_INFO(OpCallByKindFusionRuleNode, FusionRuleNode);
+  static constexpr const char* _type_key = "relay.collage.SingletonByKindFusionRule";
+  TVM_DECLARE_FINAL_OBJECT_INFO(SingletonByKindFusionRuleNode, FusionRuleNode);
 };
 
-class OpCallByKindFusionRule : public FusionRule {
+class SingletonByKindFusionRule : public FusionRule {
  public:
-  OpCallByKindFusionRule(String rule_name);
+  SingletonByKindFusionRule(String rule_name, int priority);
 
-  TVM_DEFINE_OBJECT_REF_METHODS(OpCallByKindFusionRule, FusionRule, OpCallByKindFusionRuleNode);
+  TVM_DEFINE_OBJECT_REF_METHODS(SingletonByKindFusionRule, FusionRule,
+                                SingletonByKindFusionRuleNode);
 };
 
 /*!
  * \brief Holds a vector of current candidates and the additions/removals to apply to them
- * based on the following 'primitive' rules.
+ * based on the following 'simple' rules.
  */
-struct PrimRuleResults {
-  explicit PrimRuleResults(const SubGraphConfig* config) : config(config) {}
-
-  /*! \brief Schedule \p new_candidate for addition before the next round (unless it is not valid).
-   */
-  void Add(const DataflowGraph& dataflow_graph, const CandidateKernel& new_candidate);
-  /*! \brief Schedule \p old_candidate for removal before the next round. */
+class PrimRuleResults {
+ public:
+  PrimRuleResults() = default;
+  void Add(const CandidateKernel& new_candidate);
   void Remove(const CandidateKernel& old_candidate);
-
-  /*!
-   * \brief Update \p current_candidates and \p first_new_index. Return false if no
-   * new candidates were added, in which case we have reached a fixed point.
-   */
   bool PrepareForNextRound();
 
-  /*! \brief Config for pruning out new candidates. */
-  const SubGraphConfig* config;
-  /*!
-   * \brief The number of candidates at the start of the current round. This can be used
-   * to avoid considering candidates or candidate combinations which have already been
-   * considered in an earlier round.
-   */
-  size_t first_new_index;
-  /*! \brief Candidates gathered in previous rounds. */
   std::vector<CandidateKernel> current_candidates;
-  /*! \brief New candidates gathered in the current round. */
   std::vector<CandidateKernel> candidates_to_add;
-  /*! \brief Existing candidates to remove before starting the next round. */
   std::vector<CandidateKernel> candidates_to_remove;
-  /*! \brief Which candidates have been seen so far and should not be added again. */
-  std::unordered_set<CandidateKernel, CandidateKernelHash, CandidateKernelEquals> seen;
+  std::unordered_set<SubGraph, SubGraphHash, SubGraphEqual> seen;
 };
 
 /*!
@@ -432,36 +308,31 @@ class SimplePrimRule {
 
   virtual bool Fires(const DataflowGraph& dataflow_graph, const CandidateKernel& upstream,
                      const CandidateKernel& downstream) const = 0;
-
-  virtual std::string ToString() const = 0;
-
   std::string prim_rule_name_;
 };
 
 /*!
- * \brief A simple primitive rule which fires if the \p upstream and \p downstream candidates have
+ * \brief A simple rule which fires if the \p upstream and \p downstream candidates have
  * the give \p upstream_kind and \p downstream_kind (or less) respectively.
  */
-class ByKindSimplePrimRule : public SimplePrimRule {
+class KindSimplePrimRule : public SimplePrimRule {
  public:
-  ByKindSimplePrimRule(std::string sub_rule_name, OpPatternKind upstream_kind,
-                       OpPatternKind downstream_kind)
+  KindSimplePrimRule(std::string sub_rule_name, OpPatternKind upstream_kind,
+                     OpPatternKind downstream_kind)
       : SimplePrimRule(std::move(sub_rule_name)),
         upstream_kind_(upstream_kind),
         downstream_kind_(downstream_kind) {}
-  ~ByKindSimplePrimRule() override = default;
+  ~KindSimplePrimRule() override = default;
 
   bool Fires(const DataflowGraph& dataflow_graph, const CandidateKernel& upstream,
              const CandidateKernel& downstream) const override;
-  std::string ToString() const override;
 
   OpPatternKind upstream_kind_;
   OpPatternKind downstream_kind_;
 };
 
 /*!
- * \brief Given the current candidates, apply a rule to add new candidates or remove existing
- * candidates.
+ * \brief A primitive rule to apply over the current set of candidates in \p results.
  */
 class PrimRule {
  public:
@@ -469,11 +340,10 @@ class PrimRule {
   virtual ~PrimRule() = default;
   virtual void AppendAllResults(const DataflowGraph& dataflow_graph,
                                 PrimRuleResults& results) const = 0;
-  virtual std::string ToString() const = 0;
 };
 
 /*!
- * \brief Runs one or more simple primitive rules over the current candidates in \p results.
+ * \brief Runs one or more simple rules over the current candidates in \p results.
  */
 class AllSimplePrimRules : public PrimRule {
  public:
@@ -483,14 +353,11 @@ class AllSimplePrimRules : public PrimRule {
 
   void AppendAllResults(const DataflowGraph& dataflow_graph,
                         PrimRuleResults& results) const override;
-  std::string ToString() const override;
-
   std::vector<std::unique_ptr<SimplePrimRule>> simple_prim_rules_;
 };
 
 /*!
- * \brief Fuses injective sub-groups which appear inside tuples which are themselves inputs to
- * injective sub-groups.
+ * \brief Fuses injective sub-groups appear inside tuples which are inputs to injective sub-groups.
  */
 class TupleArgPrimRule : public PrimRule {
  public:
@@ -498,7 +365,6 @@ class TupleArgPrimRule : public PrimRule {
   ~TupleArgPrimRule() override = default;
   void AppendAllResults(const DataflowGraph& dataflow_graph,
                         PrimRuleResults& results) const override;
-  std::string ToString() const override;
 };
 
 /*!
@@ -511,40 +377,38 @@ class ConstantPrimRule : public PrimRule {
   ~ConstantPrimRule() override = default;
   void AppendAllResults(const DataflowGraph& dataflow_graph,
                         PrimRuleResults& results) const override;
-  std::string ToString() const override;
 };
 
 /*!
- * \brief Fusion rule which fuses sub-graphs to exploit optimizations commonly available in backends
- * (including the TVM lowering backend). Those optimization rules are in turn described by one or
- * more \p PrimRules.
- *
- * For TVM these primitive rules are guided by the \p OpPatternKind associated with every sub-graph.
- * That in turn is the maximum of the kind of each expression node in the sub-graph, using the
- * rules:
+ * \brief Fusion rule which fuses sub-graphs to exploit optimizations available in the TVM
+ * lowering pipeline. This is guided by the \p OpPatternKind associated with every sub-graph.
+ * That in turn is the maximum kind for each node in the sub-graph, using the rules:
  *  - Constants are \p kElemwise.
  *  - A call to a Relay operator has the kind of its callee.
  *  - Tuple construction and projection are injective provided all tuple fields are of tensor type.
  *  - All other sub-expressions are opaque.
  *
- * The available \p OpPatternKinds (and our abbreviations for them) are:
- *  - E: kElemWise, eg nn.relu
+ * We generally mimic the classic FuseOps TVM Pass, but emit all possibilities instead of just
+ * the unique largest possible sub-graph.
+ *
+ * The available \p OpPatternKinds and our abbreviations are:
+ *  - E: kElemWise, eg relu
  *  - B: kBroadcast, eg add
  *  - I: kInjective, eg concatenate
  *  - R: kCommReduce, eg sum
- *  - A: kOutEWiseFusable, eg nn.conv2d (often called 'anchor nodes', hence the A abbreviation)
+ *  - A: kOutEWiseFusable, eg conv2d (often called 'anchor nodes', hence the A abbreviation)
+ *  - T: kTuple, ignored here (but used in FuseOps)
  *  - O: kOpaque, everything else
- * (The kTuple kind is not used by this machinery.)
  *
  * Kinds are ordered as above from least- to most-constraining w.r.t. possible fusion
  * opportunities. When we write a kind abbreviation below we intend it to mean that kind *or less*.
  * And when when write 'kl -> kr' we mean it to match a sub-expression of kind kr or less who's
  * dataflow inputs are all of kind kl or less.
  *
- * We can then mimic the classic \p FuseOps TVM Pass with the following primitive fusion rules:
- *  - Sub-groups cannot have taps. In the classic \p FuseOps pass taps are avoided by construction
- *    by always considering all node->dominator paths. Here we naively allow taps on all candidates,
- *    but reject them using SubGraph::IsValid with a SubGraphConfig with allow_taps = false.
+ * The fusion rules are then:
+ *  - Sub-groups cannot have taps. (The classic FuseOps pass works in terms of node->dominator
+ *    paths to avoid taps in any candidates. We prefer instead to just build all the candidates
+ *    and reject those with taps at the end.)
  *  - Join A -> B
  *  - Join B -> R
  *  - Join I -> I
@@ -552,65 +416,101 @@ class ConstantPrimRule : public PrimRule {
  *    tuple field can be provided by an I sub-graph exit, then both the tuple and all such fields
  *    may be joined.
  *
- * Note that \p FuseOps only considers the largest possible sub-graphs. However this fusion rule
- * considers all possibilities so as to 'make room' for other targets supplying other
- * overlapping candidates.
+ * For a flow such as A->B->R the classic FuseOps considers only (A->B)->R, however the above
+ * rules also allow A->(B->R).
  *
- * Other BYOC toolchains may have different primitive rules, which can be expressed by extending
- * \p PrimRule above.
+ * (Note that we don't need to distinguish elemwise and broadcast kinds).
  */
-class CombineByPrimitivesFusionRuleNode : public FusionRuleNode {
+class CombineByKindFusionRuleNode : public FusionRuleNode {
  public:
   FusionRule sub_rule_;
   std::vector<std::unique_ptr<PrimRule>> prim_rules_;
-  /*! \brief Constraints to apply to all intermediate candidates. */
-  SubGraphConfig config_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec) const override;
+                                             const FusionSpec& spec,
+                                             NameSupply* name_supply) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
  public:
-  static constexpr const char* _type_key = "relay.collage.CombineByPrimitivesFusionRule";
-  TVM_DECLARE_FINAL_OBJECT_INFO(CombineByPrimitivesFusionRuleNode, FusionRuleNode);
+  static constexpr const char* _type_key = "relay.collage.CombineByKindFusionRule";
+  TVM_DECLARE_FINAL_OBJECT_INFO(CombineByKindFusionRuleNode, FusionRuleNode);
 };
 
-class CombineByPrimitivesFusionRule : public FusionRule {
+class CombineByKindFusionRule : public FusionRule {
  public:
-  CombineByPrimitivesFusionRule(String rule_name, FusionRule sub_rule,
-                                std::vector<std::unique_ptr<PrimRule>> prim_rules,
-                                size_t max_max_depth_ = 4);
+  CombineByKindFusionRule(String rule_name, int priority, FusionRule sub_rule,
+                          std::vector<std::unique_ptr<PrimRule>> prim_rules);
 
-  TVM_DEFINE_OBJECT_REF_METHODS(CombineByPrimitivesFusionRule, FusionRule,
-                                CombineByPrimitivesFusionRuleNode);
+  TVM_DEFINE_OBJECT_REF_METHODS(CombineByKindFusionRule, FusionRule, CombineByKindFusionRuleNode);
 };
 
 /*!
- * \brief Fusion rules which keeps only candidates from the sub-rule with sub-groups valid
- * w.r.t. the given \p SubGraphConfig.
+ * \brief Type of functions for checking and optionally rewriting candidate fused functions
+ * before they proceed to lowering and codegen. The argument is the function extracted from
+ * the overall expression to represent the kernel. The result is one of:
+ *  - nullptr if the candidate should be rejected, eg because it has an unsupported shape.
+ *    It's often easier to reject candidates when looking at the overall sub-graph rather
+ *    than trying to make the selecting patterns exact.
+ *  - The argument, indicating the candidate should proceed as is.
+ *  - A new function, indicating we wish to rewrite the sub-graph before proceeding. This can be
+ *    used to, eg, rewrite to a target-specific operator so as to simplify downstream processing.
  */
-class OnlyValidFusionRuleNode : public FusionRuleNode {
+using TRewriteSubGraphFunc = TypedPackedFunc<Optional<Function>(const Function& function)>;
+
+/*!
+ * \brief The default rewriting function. Simply returns its argument.
+ */
+Optional<Function> DefaultRewriteSubGraphFunc(const Function& function);
+
+/*! \brief Collects all the information needed to explore fusion opportunities for a fixed target.
+ */
+class FusionSpecNode : public Object {
  public:
-  FusionRule sub_rule_;
+  /*!
+   * \brief Specification name to distinguish this spec from all others. Typcially
+   * the BYOC compiler name or "tvm".
+   */
+  String spec_name_;
+  /*!
+   * \brief The target for all candidate kernels.
+   */
+  Target target_;
+
+  /*!
+   * \brief The pattern rule to use to gather candidate kernels.
+   */
+  FusionRule rule_;
+
+  /*!
+   * \brief A function for processing the candidate kernel functions before proceeding.
+   */
+  TRewriteSubGraphFunc fused_result_func_ = DefaultRewriteSubGraphFunc;
+
+  /*!
+   * \brief Configuration for checking which sub-graphs are considered valid.
+   */
   SubGraphConfig config_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec) const override;
+                                             NameSupply* name_supply) const;
 
-  void AppendBodyItems(std::vector<Doc>& body_items) const override;
+  std::string ToString() const;
 
- public:
-  static constexpr const char* _type_key = "relay.collage.OnlyValidFusionRule";
-  TVM_DECLARE_FINAL_OBJECT_INFO(OnlyValidFusionRuleNode, FusionRuleNode);
+  static constexpr const char* _type_key = "relay.collage.FusionSpec";
+  TVM_DECLARE_FINAL_OBJECT_INFO(FusionSpecNode, Object);
 };
 
-class OnlyValidFusionRule : public FusionRule {
+class FusionSpec : public ObjectRef {
  public:
-  OnlyValidFusionRule(String rule_name, FusionRule sub_rule, const SubGraphConfig& config);
+  FusionSpec(String spec_name, Target target, FusionRule rule, SubGraphConfig config,
+             TRewriteSubGraphFunc fused_result_func = DefaultRewriteSubGraphFunc);
 
-  TVM_DEFINE_OBJECT_REF_METHODS(OnlyValidFusionRule, FusionRule, OnlyValidFusionRuleNode);
+  TVM_DEFINE_OBJECT_REF_METHODS(FusionSpec, ObjectRef, FusionSpecNode);
 };
+
+FusionRule MakeDFPatternFusionRule(String rule_name, DFPattern dataflow_pattern,
+                                   runtime::PackedFunc predicate, Target target);
 
 }  // namespace collage
 }  // namespace relay

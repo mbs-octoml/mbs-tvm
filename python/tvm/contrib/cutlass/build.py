@@ -294,7 +294,7 @@ def tune_cutlass_kernels(
         profile_all_alignments=False,
         find_first_valid=False,
         use_multiprocessing=False,
-        tmp_dir="/tmp",
+        tmp_dir="./tmp",
 ):
     """Given a module partitioned for CUTLASS offloading, profile each workload to select which
     kernels to emit.
@@ -354,6 +354,8 @@ def tune_cutlass_kernels(
     return mod, num_cutlass_partition
 
 
+
+@register_func("tvm.relay.contrib.cutlass.tune_cutlass_function")
 def tune_cutlass_function(
         func,
         sm,
@@ -362,7 +364,7 @@ def tune_cutlass_function(
         profile_all_alignments=False,
         find_first_valid=False,
         use_multiprocessing=False,
-        tmp_dir="/tmp",
+        tmp_dir="./tmp",
 ):
     gemm_profiler = CutlassGemmProfiler(sm, _get_cutlass_path(), tmp_dir)
     conv2d_profiler = CutlassConv2DProfiler(sm, _get_cutlass_path(), tmp_dir)
@@ -458,7 +460,7 @@ def tune_cutlass_function(
 
 
 def build_cutlass_kernels(
-        lib, sm, tmp_dir="/tmp", lib_path="compile.so", threads=-1, use_fast_math=False
+        lib, sm, tmp_dir="./tmp", lib_path="compile.so", threads=-1, use_fast_math=False
 ):
     """Compile CUTLASS kernels in lib and return the runtime module ready to run.
 
@@ -497,7 +499,7 @@ def build_cutlass_kernels(
 def build_cutlass_kernels_vm(
         vm_exec,
         sm,
-        tmp_dir="/tmp",
+        tmp_dir="./tmp",
         lib_path="compile.so",
         vmcode_path="vmcode.ro",
         threads=-1,

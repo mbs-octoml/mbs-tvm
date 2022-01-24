@@ -37,8 +37,6 @@ class NameSupply {
  public:
   explicit NameSupply(std::string prefix) : prefix_(std::move(prefix)) {}
 
-  NameSupply MakeSubNameSupply();
-
   void Reserve(const std::string& existing) { next_free_index_.emplace(existing, 1); }
 
   std::string Fresh(const std::initializer_list<std::string>& hints);

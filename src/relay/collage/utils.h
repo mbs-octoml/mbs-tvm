@@ -59,17 +59,6 @@ bool IsSimpleScalar(const ConstantNode* constant_node);
  */
 bool CanInline(const Expr& expr);
 
-/*!
- * \brief Returns true if \p op_node can be directly handled by the VM.
- */
-bool IsSpecialOp(const OpNode* op_node);
-
-/*!
- * \brief Return true if the Relay expression node given by \p expr cannot be evaluated by
- * the VM and must end up in a kernel.
- */
-bool MustBeLowered(const Expr& expr);
-
 }  // namespace collage
 }  // namespace relay
 }  // namespace tvm

@@ -27,7 +27,7 @@
 #include <tvm/relay/transform.h>
 
 #include "../transforms/pass_utils.h"
-#include "./utils.h"
+#include "utils.h"
 
 namespace tvm {
 namespace relay {
@@ -82,7 +82,7 @@ class Extractor : public ExprMutator {
    */
   void Extract() {
     ICHECK(!sub_graph_->IsEmpty());
-    VLOG(2) << "Extracting " << sub_graph_->ToString();
+    VLOG(1) << "Extracting " << sub_graph_->ToString();
 
     //  In reverse dataflow order...
     for (PostDfsIndex i = dataflow_graph_->size(); i > 0; --i) {
@@ -91,7 +91,7 @@ class Extractor : public ExprMutator {
         // Node is outside sub-graph.
         continue;
       }
-      VLOG(2) << "index " << index;
+      VLOG(1) << "index " << index;
       auto node = dataflow_graph_->index_to_node(index);
       if (sub_graph_->exit_[node->index_] || node->is_external_ || memo_.count(node->ref()) == 0) {
         // This sub-expression is:
@@ -100,7 +100,7 @@ class Extractor : public ExprMutator {
         //    output from a downstream sub-expression).
         //  - not yet visited, in which case we must evaluate it for its side effects.
         Expr output = VisitExpr(GetRef<Expr>(node->node_ref_));
-        VLOG(2) << "index " << index << " added as output:\n"
+        VLOG(1) << "index " << index << " added as output:\n"
                 << PrettyPrint(output) << "\nat " << outputs_.size();
         expr_to_output_index_.emplace(node->node_ref_, outputs_.size());
         outputs_.emplace_back(std::move(output));
@@ -174,7 +174,7 @@ class Extractor : public ExprMutator {
     for (const auto& kv : expr_to_output_index_) {
       Expr expr = num_outputs_ > 1 ? static_cast<Expr>(TupleGetItem(call_, kv.second))
                                    : static_cast<Expr>(call_);
-      VLOG(2) << "output " << dataflow_graph_->item_to_node(kv.first)->index_ << " is at index "
+      VLOG(1) << "output " << dataflow_graph_->item_to_node(kv.first)->index_ << " is at index "
               << kv.second << " (of " << num_outputs_ << " outputs)";
       output_substitution_.emplace(kv.first, std::move(expr));
     }
@@ -215,7 +215,7 @@ class Extractor : public ExprMutator {
  private:
   /*! \brief Returns a map from original index to new index for each node inside the sub-graph. */
   IndexSubst MakeIndexSubst(const DataflowGraph& new_dataflow_graph) const {
-    VLOG(2) << "building extractor substitution";
+    VLOG(1) << "building extractor substitution";
     IndexSubst subst;
     for (PostDfsIndex index : sub_graph_->inside_) {
       auto orig_node = dataflow_graph_->index_to_node(index);
@@ -223,7 +223,7 @@ class Extractor : public ExprMutator {
       auto itr = memo_.find(orig_node->ref());
       ICHECK(itr != memo_.end());
       auto new_node = new_dataflow_graph.item_to_node(itr->second);
-      VLOG(2) << orig_node->index_ << " |-> " << new_node->index_;
+      VLOG(1) << orig_node->index_ << " |-> " << new_node->index_;
       subst.emplace(orig_node->index_, new_node->index_);
     }
     return subst;
@@ -261,9 +261,9 @@ class Extractor : public ExprMutator {
    * Otherwise return the variable to represent it. Should be called only on inputs
    * to nodes which are inside the sub-graph.
    */
-  Expr VisitExpr(const Expr& expr) final {
+  Expr VarOrExpr(const Expr& expr) {
     if (inside(expr)) {
-      return ExprMutator::VisitExpr(expr);
+      return VisitExpr(expr);
     } else if (CanInline(expr)) {
       // Implicitly include inlinable input sub-expressions.
       return expr;
@@ -272,8 +272,7 @@ class Extractor : public ExprMutator {
     }
   }
 
-#if 0
-  Expr VisitExpr_(const CallNode* call_node) final {
+  Expr VisitExpr_(const CallNode* call_node) override {
     auto call = GetRef<Call>(call_node);
     ICHECK(inside(call));
     Expr new_op = VarOrExpr(call_node->op);
@@ -283,7 +282,6 @@ class Extractor : public ExprMutator {
     }
     return WithFields(call, new_op, std::move(new_args));
   }
-#endif
 
   Expr VisitExpr_(const FunctionNode* function_node) override {
     if (function_node->HasNonzeroAttr(attr::kPrimitive)) {
@@ -366,13 +364,13 @@ Expr Rewriter::VisitExpr(const Expr& expr) {
 
 IndexSubst Rewriter::MakeIndexSubst(const DataflowGraph& new_dataflow_graph) const {
   IndexSubst subst;
-  VLOG(2) << "building rewriter substitution";
+  VLOG(1) << "building rewriter substitution";
   for (PostDfsIndex index = 0; index < extractor_->dataflow_graph().size(); ++index) {
     auto orig_node = extractor_->dataflow_graph().index_to_node(index);
     auto itr = memo_.find(orig_node->ref());
     if (itr != memo_.end()) {
       auto new_node = new_dataflow_graph.item_to_node(itr->second);
-      VLOG(2) << orig_node->index_ << " |-> " << new_node->index_;
+      VLOG(1) << orig_node->index_ << " |-> " << new_node->index_;
       subst.emplace(orig_node->index_, new_node->index_);
     }
   }
@@ -380,15 +378,6 @@ IndexSubst Rewriter::MakeIndexSubst(const DataflowGraph& new_dataflow_graph) con
 }
 
 }  // namespace
-
-std::string SubGraphConfig::ToString() const {
-  std::ostringstream os;
-  os << "{max_outputs=" << max_outputs;
-  os << ",allow_taps=" << allow_taps;
-  os << ",max_max_depth=" << max_max_depth;
-  os << "}";
-  return os.str();
-}
 
 std::pair<OpPatternKind, std::string> SubExprKindAndLabel(const Expr& sub_expr) {
   class Visitor : public ExprFunctor<std::pair<OpPatternKind, std::string>(const Expr&)> {
@@ -414,24 +403,20 @@ std::pair<OpPatternKind, std::string> SubExprKindAndLabel(const Expr& sub_expr) 
         if (opt_i.defined()) {
           OpPatternKind kind = static_cast<OpPatternKind>(opt_i.value()->value);
           VLOG(1) << "TOpPattern for function is " << KindToString(kind);
-          return {kind, "call_prim"};
+          return {kind, ""};
         } else {
           VLOG(1) << "calling function without TOpPattern, considering opaque";
-          return {kOpaque, "call_fun"};
+          return {kOpaque, ""};
         }
       } else {
         VLOG(1) << "unsupported call, considering opaque";
-        return {kOpaque, "call_any"};
+        return {kOpaque, ""};
       }
     }
 
     std::pair<OpPatternKind, std::string> VisitExpr_(const ConstantNode* constant_node) final {
       VLOG(1) << "TOpPattern for constant is " << KindToString(kElemWise);
-      if (IsSimpleScalar(constant_node)) {
-        return {kElemWise, "scalar"};
-      } else {
-        return {kElemWise, "const"};
-      }
+      return {kElemWise, "const"};
     }
 
     std::pair<OpPatternKind, std::string> VisitExpr_(const TupleNode* tuple_node) final {
@@ -461,42 +446,8 @@ std::pair<OpPatternKind, std::string> SubExprKindAndLabel(const Expr& sub_expr) 
       }
     }
 
-    // TODO(mbs): We implement the following mostly so we have a lightweight way of describing
-    // the current sub-expression. If fusion is even extended beyond the usual call/tuple/proj
-    // sub-language we should revise the returned operator kinds to match.
-
-    std::pair<OpPatternKind, std::string> VisitExpr_(const VarNode* var_node) final {
-      return {kOpaque, "%" + var_node->name_hint()};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const GlobalVarNode* global_var_node) final {
-      return {kOpaque, "@" + global_var_node->name_hint};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const OpNode* op_node) final {
-      return {kOpaque, "`" + op_node->name};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const FunctionNode* function_node) final {
-      return {kOpaque, "fn"};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const LetNode* let_node) final {
-      return {kOpaque, "let"};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const IfNode* if_node) final {
-      return {kOpaque, "if"};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const RefCreateNode* ref_create_node) final {
-      return {kOpaque, "ref"};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const RefReadNode* op) final {
-      return {kOpaque, "ref_read"};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const RefWriteNode* op) final {
-      return {kOpaque, "ref_write"};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const ConstructorNode* op) final {
-      return {kOpaque, "`" + op->name_hint};
-    }
-    std::pair<OpPatternKind, std::string> VisitExpr_(const MatchNode* op) final {
-      return {kOpaque, "match"};
+    std::pair<OpPatternKind, std::string> VisitExprDefault_(const Object* op) final {
+      return {kOpaque, ""};
     }
   };
   return Visitor().VisitExpr(sub_expr);
@@ -563,6 +514,8 @@ bool SubGraphNode::IsValid(const DataflowGraph& dataflow_graph,
   const DataflowGraph::Node* basic_block = nullptr;
   for (PostDfsIndex index : inside_) {
     auto node = dataflow_graph.index_to_node(index);
+    VLOG(1) << "index " << index << " has basic block "
+            << (node->basic_block_ ? std::to_string(node->basic_block_->index_) : "null");
     if (basic_block == nullptr) {
       basic_block = node->basic_block_;
     }
@@ -788,7 +741,6 @@ SubGraph::SubGraph(const DataflowGraph& dataflow_graph, IndexSet inside, OpPatte
   auto node = runtime::make_object<SubGraphNode>();
   node->inside_ = std::move(inside);
   node->first_inside_index_ = node->inside_.FirstInsideIndex();
-  node->last_inside_index_ = node->inside_.LastInsideIndex();
   node->entry_ = IndexSet(node->inside_.end_index());
   node->exit_ = IndexSet(node->inside_.end_index());
   node->input_ = IndexSet(node->inside_.end_index());
