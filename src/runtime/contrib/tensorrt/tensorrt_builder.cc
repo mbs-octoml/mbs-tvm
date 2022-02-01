@@ -146,6 +146,9 @@ void TensorRTBuilder::AddLayer(int nid, const JSONGraphNode& node) {
     }
     params.inputs.push_back(input);
   }
+  ICHECK(converter->variable_input_count || converter->input_types.size() == params.inputs.size())
+      << "Op " << params.op_name << " expected " << converter->input_types.size() << " arguments but have "
+      << params.inputs.size();
 
   // Convert op to TRT.
   converter->Convert(&params);

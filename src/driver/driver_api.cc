@@ -434,12 +434,6 @@ std::pair<IRModule, IRModule> SplitMixedModule(IRModule mod_mixed, const Target&
 
   CheckAndUpdateHostConsistency(&target, &target_host);
 
-  bool target_is_gpu = std::find(keys.begin(), keys.end(), "gpu") != keys.end();
-  if (target_is_gpu && device_mod->functions.size() == 0) {
-    DLOG(WARNING) << "Specified target " << target->str()
-                  << " but cannot find device code. Did you forget to bind?";
-  }
-
   return {host_mod, device_mod};
 }
 

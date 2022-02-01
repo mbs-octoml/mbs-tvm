@@ -62,7 +62,7 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
       const PackedFunc* fprint = Registry::Get("relay._constant_repr");
       ICHECK(fprint) << "unable to find printing function for constants";
       std::string data = (*fprint)(GetRef<Constant>(node));
-      p->stream << "Constant(" << data << ")";
+      p->stream << "Constant(" << data << ") /*" << node->backend_ << " */";
     });
 
 TensorType ConstantNode::tensor_type() const {
@@ -119,7 +119,7 @@ Tuple WithFields(Tuple tuple, Optional<Array<Expr>> opt_fields,
 TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
     .set_dispatch<TupleNode>([](const ObjectRef& ref, ReprPrinter* p) {
       auto* node = static_cast<const TupleNode*>(ref.get());
-      p->stream << "Tuple(" << node->fields << ")";
+      p->stream << "Tuple(" << node->fields << ") /* " << node->backend_ << " */";
     });
 
 Var::Var(Id vid, Type type_annotation, Span span) {
@@ -172,7 +172,7 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
         p->stream << ", ty=";
         p->Print(node->type_annotation);
       }
-      p->stream << ")";
+      p->stream << ") /* " << node->backend_ << " */";
     });
 
 Call::Call(Expr op, Array<Expr> args, Attrs attrs, Array<Type> type_args, Span span) {
@@ -249,7 +249,8 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
     .set_dispatch<CallNode>([](const ObjectRef& ref, ReprPrinter* p) {
       auto* node = static_cast<const CallNode*>(ref.get());
       p->stream << "CallNode(" << node->op << ", " << node->args << ", " << node->attrs << ", "
-                << node->type_args << ")";
+                << node->type_args << ")"
+                << " /* " << node->backend_ << " */";
     });
 
 Let::Let(Var var, Expr value, Expr body, Span span) {
@@ -293,7 +294,8 @@ TVM_REGISTER_GLOBAL("relay.ir.Let").set_body_typed([](Var var, Expr value, Expr 
 TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
     .set_dispatch<LetNode>([](const ObjectRef& ref, ReprPrinter* p) {
       auto* node = static_cast<const LetNode*>(ref.get());
-      p->stream << "LetNode(" << node->var << ", " << node->value << ", " << node->body << ")";
+      p->stream << "LetNode(" << node->var << ", " << node->value << ", " << node->body << ") /* "
+                << node->backend_ << " */";
     });
 
 If::If(Expr cond, Expr true_branch, Expr false_branch, Span span) {
@@ -341,7 +343,7 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
     .set_dispatch<IfNode>([](const ObjectRef& ref, ReprPrinter* p) {
       auto* node = static_cast<const IfNode*>(ref.get());
       p->stream << "IfNode(" << node->cond << ", " << node->true_branch << ", "
-                << node->false_branch << ")";
+                << node->false_branch << ") /* " << node->backend_ << " */";
     });
 
 TupleGetItem::TupleGetItem(Expr tuple, int index, Span span) {
@@ -383,7 +385,8 @@ TVM_REGISTER_GLOBAL("relay.ir.TupleGetItem").set_body_typed([](Expr tuple, int i
 TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
     .set_dispatch<TupleGetItemNode>([](const ObjectRef& ref, ReprPrinter* p) {
       auto* node = static_cast<const TupleGetItemNode*>(ref.get());
-      p->stream << "TupleGetItemNode(" << node->tuple << ", " << node->index << ")";
+      p->stream << "TupleGetItemNode(" << node->tuple << ", " << node->index << ") /* "
+                << node->backend_ << " */";
     });
 
 RefCreate::RefCreate(Expr value, Span span) {
@@ -506,6 +509,15 @@ TVM_REGISTER_GLOBAL("relay.ir.TempExprRealize").set_body_typed([](TempExpr temp)
 });
 
 TVM_REGISTER_GLOBAL("relay.ir.Any").set_body_typed([]() { return Any(); });
+
+
+/*
+ * Helper function to update backend
+ */
+TVM_REGISTER_GLOBAL("relay.analysis.update_backend").set_body_typed([](Expr expr, String backend) {
+  expr.set_backend(std::move(backend));
+});
+
 
 /*
  * Non-recursive traversal with dismantling unused call nodes,

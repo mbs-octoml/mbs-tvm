@@ -1192,7 +1192,9 @@ Pass LowerTEPass(const String& module_name, ProcessFn process_fn,
                  VirtualDevice host_virtual_device) {
   runtime::TypedPackedFunc<IRModule(IRModule, PassContext)> pass_func = [=](IRModule module,
                                                                             PassContext ctx) {
-    return LowerTE(module, module_name, process_fn, host_virtual_device);
+    IRModule result = LowerTE(module, module_name, process_fn, host_virtual_device);
+    VLOG(0) << "After lowering:\n" << PrettyPrint(result);
+    return result;
   };
 
   return tvm::transform::Sequential(

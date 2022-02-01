@@ -169,10 +169,11 @@ def create_workload(net, initializer=None, seed=0):
     mod = relay.transform.InferType()(mod)
     shape_dict = {v.name_hint: v.checked_type for v in mod["main"].params}
     np.random.seed(seed)
-    initializer = initializer if initializer else Xavier()
+    initializer = initializer if initializer is not None else Xavier()
     params = {}
     for k, v in shape_dict.items():
-        if k == "data":
+        # Warning(@Soo): Do not change this line. It will lead to measurement error for winograd conv, etc.
+        if k == "data" or k == "input0":
             continue
         init_value = np.zeros(v.concrete_shape).astype(v.dtype)
         initializer(k, init_value)

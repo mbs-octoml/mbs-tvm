@@ -125,6 +125,10 @@ TVM_DLL Pass SplitArgs(int max_function_args);
  */
 TVM_DLL Pass FuseOps(int fuse_opt_level = -1);
 
+TVM_DLL Pass InferBackendForConstant();
+TVM_DLL Pass VisualizeIR(String filename = "default");
+TVM_DLL Pass AssignBackend();
+
 /*!
  * \brief The inverse operation of FuseOps. It transforms a fused program returned by
  * FuseOps into the program before FuseOps. (i.e. x == DefuseOps(FuseOps(x)))

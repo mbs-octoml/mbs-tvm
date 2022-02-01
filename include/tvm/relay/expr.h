@@ -75,6 +75,7 @@ class ConstantNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const ConstantNode* other, SEqualReducer equal) const {
@@ -112,6 +113,7 @@ class TupleNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const TupleNode* other, SEqualReducer equal) const {
@@ -201,6 +203,7 @@ class VarNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const VarNode* other, SEqualReducer equal) const {
@@ -325,6 +328,7 @@ class CallNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const CallNode* other, SEqualReducer equal) const {
@@ -432,6 +436,7 @@ class LetNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const LetNode* other, SEqualReducer equal) const {
@@ -524,6 +529,7 @@ class IfNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const IfNode* other, SEqualReducer equal) const {
@@ -598,6 +604,7 @@ class TupleGetItemNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const TupleGetItemNode* other, SEqualReducer equal) const {
@@ -662,6 +669,7 @@ class RefCreateNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const RefCreateNode* other, SEqualReducer equal) const {
@@ -724,6 +732,7 @@ class RefReadNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const RefReadNode* other, SEqualReducer equal) const {
@@ -788,6 +797,7 @@ class RefWriteNode : public ExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const RefWriteNode* other, SEqualReducer equal) const {

@@ -60,3 +60,5 @@ from .sparse_reshape import *
 from .transform import *
 from .unique import *
 from .searchsorted import *
+from .activation import *
+from .bias_add import *

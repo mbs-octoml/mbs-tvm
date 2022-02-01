@@ -117,6 +117,9 @@ def InferTypeLocal(expr):
     """
     return _ffi_api.InferTypeLocal(expr)
 
+def InferTypeExpr(expr):
+    return _ffi_api.InferTypeExpr(expr)
+
 
 def FoldScaleAxis():
     """Fold the scaling of axis into weights of conv2d/dense. This pass will
@@ -518,7 +521,7 @@ def Legalize(legalize_map_attr_name="FTVMLegalize"):
     return _ffi_api.Legalize(legalize_map_attr_name)
 
 
-def MergeComposite(pattern_table):
+def MergeComposite(pattern_table, desired_backend =""):
     """Merge multiple operators into a single composite relay function.
 
     Parameters
@@ -551,7 +554,7 @@ def MergeComposite(pattern_table):
         patterns.append(pattern)
         checks.append(check)
 
-    return _ffi_api.MergeComposite(pattern_names, patterns, *checks)
+    return _ffi_api.MergeComposite(pattern_names, patterns, desired_backend, *checks)
 
 
 def MergeCompilerRegions():

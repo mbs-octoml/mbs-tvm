@@ -171,7 +171,7 @@ def partition_for_tensorrt(
     seq = get_pass_order(use_patterns)
     with tvm.transform.PassContext(opt_level=3, config={"relay.ext.tensorrt.options": config}):
         mod = seq(mod)
-        mod = prune_tensorrt_subgraphs(mod)
+        # mod = prune_tensorrt_subgraphs(mod)
     return mod, config
 
 
@@ -418,17 +418,20 @@ def add_annotate_fn(expr):  # pylint: disable=unused-variable
     if get_tensorrt_use_implicit_batch_mode() and any([len(shape) < 1 for shape in shapes]):
         return False
 
-    if (
-        not get_tensorrt_use_implicit_batch_mode()
-        and (isinstance(args[0], Constant) or isinstance(args[1], Constant))
-        and len(shapes[0]) > 0
-        and len(shapes[1]) > 0
-        and shapes[0][0] == shapes[1][0]
-        and shapes[0][0] != 1
-        and (len(shapes[0]) > 3 or len(shapes[1]) > 3)
-    ):
-        logger.info("add: bug in TRT with adding batched constants.")
+    if any([x.checked_type.dtype != "float32" for x in args]):
+        logger.info("Only float32 inputs are supported for TensorRT.")
         return False
+    #if (
+    #    not get_tensorrt_use_implicit_batch_mode()
+    #    and (isinstance(args[0], Constant) or isinstance(args[1], Constant))
+    #    and len(shapes[0]) > 0
+    #    and len(shapes[1]) > 0
+    #    and shapes[0][0] == shapes[1][0]
+    #    and shapes[0][0] != 1
+    #    and (len(shapes[0]) > 3 or len(shapes[1]) > 3)
+    #):
+    #    logger.info("add: bug in TRT with adding batched constants.")
+    #    return False
     return True
 
 

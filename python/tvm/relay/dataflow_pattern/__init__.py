@@ -45,6 +45,11 @@ def register_df_node(type_key=None):
 
 class DFPattern(Node):
     """Base class of all Patterns."""
+    def __eq__(self, other):
+        return isinstance(other, DFPattern) and str(self) == str(other)
+
+    def __hash__(self):
+        return hash(str(self))
 
     def __call__(self, *args):
         args = list(args)

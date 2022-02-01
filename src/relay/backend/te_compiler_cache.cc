@@ -134,10 +134,32 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
       }
       memo_[param] = inputs;
     }
+
+    std::string dp_target = relay_func->GetAttr<String>(attr::kBackendOp, "").value();
+    // Err, shouldn't this be disjunction for diff library backends??
+    bool do_custom_lowering = dp_target.size() > 0 &&
+                              (dp_target.find("INVALID_BACKEND_OP") == std::string::npos) &&
+                              ((dp_target.find("cudnn") != std::string::npos) ||
+                               (dp_target.find("cublas") != std::string::npos) ||
+                               (dp_target.find("mkl") != std::string::npos));
+
+    if (dp_target.find("tensorrt") != std::string::npos) {
+      if (dp_target.find("reshape") != std::string::npos) {
+        do_custom_lowering = false;
+      } else {
+        LOG(INFO) << "DP_TARGET: " << dp_target;
+        ICHECK_EQ(dp_target.find("tensorrt"), std::string::npos);
+      }
+    }
+
     readable_name_stream_ << "fused";
 
-    Array<te::Tensor> outputs = this->VisitExpr(relay_func->body);
-
+    Array<te::Tensor> outputs;
+    if (do_custom_lowering) {
+      outputs = MyVisitExpr(relay_func, dp_target);
+    } else {
+      outputs = VisitExpr(relay_func->body);
+    }
     candidate_name_ = readable_name_stream_.str();
 
     constexpr static size_t kMaxFuncNameLength = 80;
@@ -150,6 +172,86 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
       candidate_name_ = truncated_name.str();
     }
 
+    return outputs;
+  }
+
+  void CollectInputs(Map<Expr, Array<te::Tensor>>& input_map, const Expr& expr) {
+    const auto* call_node = expr.as<CallNode>();
+    ICHECK(call_node) << "expecting call, got:" << std::endl << PrettyPrint(expr);
+
+    int count_tuple = 0;
+    for (Expr arg : call_node->args) {
+      if (arg->checked_type().as<TupleTypeNode>()) {
+        ++count_tuple;
+      }
+
+      if (arg.as<CallNode>()) {
+        CollectInputs(input_map, arg);
+      }
+
+      Array<te::Tensor> inputs;
+      for (te::Tensor tensor : VisitExpr(arg)) {
+        inputs.push_back(tensor);
+      }
+      input_map.Set(arg, inputs);
+    }
+
+    if (count_tuple) {
+      ICHECK_EQ(call_node->args.size(), 1U) << "Only allow function with a single tuple input";
+    }
+  }
+
+  Array<te::Tensor> MyVisitExpr(const Function& relay_func, const std::string& dp_target) {
+    const auto* call_node = relay_func->body.as<CallNode>();
+    ICHECK(call_node) << "Primitive function body must be a call node";
+    ICHECK(call_node->op.as<OpNode>()) << "Primitive function only allows call into primitive ops";
+    Op op = Downcast<Op>(call_node->op);
+
+    static auto fpattern = Op::GetAttrMap<TOpPattern>("TOpPattern");
+    static auto flower_call = tvm::runtime::Registry::Get("relay.backend.lower_call");
+    ICHECK(flower_call) << "relay.backend.lower_call is not registered.";
+
+    Map<Expr, Array<te::Tensor>> input_map;
+    CollectInputs(input_map, relay_func->body);
+
+    Array<te::Tensor> outputs;
+    OpImplementation impl;
+
+    static const PackedFunc* ftarget_specific_lower_call =
+        tvm::runtime::Registry::Get("relay.backend.target_specific_lowering");
+    ICHECK(ftarget_specific_lower_call)
+        << "relay.backend.target_specific_lowering is not registered";
+    LoweredOutput lowered_out = (*ftarget_specific_lower_call)(relay_func, input_map, dp_target);
+    outputs = lowered_out->outputs;
+    impl = lowered_out->implementation;
+
+    int op_pattern = fpattern[op];
+    if (!use_auto_scheduler_ && op_pattern >= kCommReduce) {
+      ICHECK(!anchor_op_.defined() || anchor_op_pattern_ < kCommReduce)
+          << "Cannot apply TOPI schedule to a primitive function with two complicated ops"
+          << " anchor=" << anchor_op_ << " current=" << op;
+    }
+    if (op_pattern >= anchor_op_pattern_) {
+      anchor_op_ = op;
+      anchor_attrs_ = call_node->attrs;
+      anchor_op_pattern_ = op_pattern;
+      anchor_implementation_ = impl;
+    }
+
+    if (outputs.size() != 1) {
+      const auto* tuple_type = call_node->checked_type().as<TupleTypeNode>();
+      ICHECK(tuple_type) << "Expect output to be a tuple type";
+      ICHECK_EQ(tuple_type->fields.size(), outputs.size());
+    }
+
+    // Set the name to `__copy`. It will be detected in graph executor to perform
+    // data copy across devices.
+    if (op == device_copy_op_) {
+      readable_name_stream_.str(std::string());
+      readable_name_stream_ << "__copy";
+    } else {
+      readable_name_stream_ << '_' << op->name;
+    }
     return outputs;
   }
 

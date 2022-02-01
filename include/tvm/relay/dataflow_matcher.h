@@ -104,7 +104,7 @@ Expr RewritePatterns(Array<DFPatternCallback> callbacks, Expr expr, IRModule mod
  *
  * \return Return the paritioned Expr.
  */
-Expr PartitionPattern(DFPattern pattern, Expr expr, Map<String, ObjectRef> attrs, PackedFunc check);
+Expr PartitionPattern(DFPattern pattern, Expr expr, Map<String, ObjectRef> attrs, PackedFunc check, String desired_backend);
 
 /*!
  * \brief Infer the type of an expression.

@@ -238,11 +238,11 @@ def build(
             f"but got {type(inputs)}."
         )
 
-    if target_host is not None:
-        warnings.warn(
-            "target_host parameter is going to be deprecated. "
-            "Please pass in tvm.target.Target(target, host=target_host) instead."
-        )
+    #if target_host is not None:
+    #    warnings.warn(
+    #        "target_host parameter is going to be deprecated. "
+    #        "Please pass in tvm.target.Target(target, host=target_host) instead."
+    #    )
 
     if not isinstance(inputs, (dict, container.Map)):
         target = Target.current() if target is None else target

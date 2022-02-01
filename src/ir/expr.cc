@@ -34,6 +34,32 @@
 
 namespace tvm {
 
+
+bool RelayExprNode::OnBackend(const String& desired_backend) const {
+  if (desired_backend.empty()) {
+    return true;
+  }
+
+  // eg: 1-autotvm_0-Op(nn.relu)[1-Op(add)[2-Op(nn.conv2d)[*, *], *]]
+  if (backend_.empty() || backend_ == "default") {
+    return true;
+  }
+
+  std::string backend = backend_;
+
+  size_t delim_pos = backend.find('-');
+  ICHECK(delim_pos != std::string::npos) << backend_;
+  // eg: autotvm_0-Op(nn.relu)[1-Op(add)[2-Op(nn.conv2d)[*, *], *]]
+  backend = backend.substr(delim_pos + 1);
+
+  delim_pos = backend.find('_');
+  ICHECK(delim_pos != std::string::npos) << backend_;
+  // eg: autotvm
+  backend = backend.substr(0, delim_pos);
+
+  return backend == desired_backend;
+}
+
 PrimExpr::PrimExpr(int32_t value) : PrimExpr(IntImm(DataType::Int(32), value)) {}
 
 PrimExpr::PrimExpr(float value) : PrimExpr(FloatImm(DataType::Float(32), value)) {}

@@ -18,6 +18,7 @@
 """Schedule for pooling operators"""
 import tvm
 from tvm import te
+from tvm.contrib import cudnn
 from .. import tag
 from ..utils import traverse_inline
 from .reduction import _schedule_reduce
@@ -203,3 +204,14 @@ def schedule_pool_grad(outs):
     traverse_inline(s, outs[0].op, _callback)
 
     return s
+
+def max_pool2d_cudnn(x, pool_size, strides, padding, pool_type, ceil_mode, data_layout, count_include_pad):
+    """Perform max pool2d on the data using cudnn"""
+    return cudnn.max_pool2d(x, pool_size, strides, padding, pool_type, ceil_mode, data_layout, count_include_pad)
+
+def avg_pool2d_cudnn(x, pool_size, strides, padding, pool_type, ceil_mode, data_layout, count_include_pad):
+    """Perform max pool2d on the data using cudnn"""
+    return cudnn.avg_pool2d(x, pool_size, strides, padding, pool_type, ceil_mode, data_layout, count_include_pad)
+
+
+

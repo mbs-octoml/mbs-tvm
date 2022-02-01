@@ -187,6 +187,17 @@ void WarnIfMalformed(const IRModule& mod, relay::Function func) {
   // Type check the item before we add it to the module.
   auto fv = relay::FreeVars(func);
   auto ftv = relay::FreeTypeVars(func, mod);
+
+  if (fv.size() > 0) {
+    auto vis_call = tvm::runtime::Registry::Get("collage.optimizer.visualize_network_debug");
+    (*vis_call)(func, "debug_add");
+    LOG(WARNING)
+        << "[Done] Debug_add visualization" << std::endl
+        << "It errors out because our fusion decision was wrong" << std::endl
+        << "Last issue was that InferBackendForConstant changes our original fusion decison "
+           "in a wrong way";
+  }
+
   // TODO(@jroesch): refactor to use diagnostic context
   ICHECK_EQ(fv.size(), 0) << "Function:" << std::endl
                           << PrettyPrint(func) << std::endl

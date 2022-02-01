@@ -67,6 +67,7 @@ class FunctionNode : public BaseFuncNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend", &backend_);
   }
 
   bool SEqualReduce(const FunctionNode* other, SEqualReducer equal) const {
@@ -170,6 +171,14 @@ const FunctionNode* AsOptimizableFunctionNode(const BaseFunc& base_func);
  * \brief namespace of the attributes that can be attached to a relay::Function.
  */
 namespace attr {
+
+/*! \brief Indicate the corresponding backend op. */
+constexpr const char* kBackendOp = "BackendOp";
+/*! \brief Indicate whether we use original or custom fusion pass. */
+constexpr const char* kCustomFusionPass = "CustomFusionPass";
+/*! \brief Indicate whether we use original or custom fusion pass. */
+constexpr const char* kAllowAlterOp = "AllowAlterOp";
+
 /*! \brief Mark the function as a primitive function. */
 constexpr const char* kPrimitive = "Primitive";
 /*!

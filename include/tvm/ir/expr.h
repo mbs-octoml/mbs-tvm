@@ -205,6 +205,14 @@ class RelayExprNode : public BaseExprNode {
    */
   VirtualDevice virtual_device() const;
 
+  String backend_ = "default";
+
+  const String& backend() const { return backend_; }
+
+  bool OnBackend(const String& desired_backend) const;
+
+  void set_backend(String backend) { backend_ = std::move(backend); }
+
   static constexpr const char* _type_key = "RelayExpr";
   static constexpr const uint32_t _type_child_slots = 22;
   TVM_DECLARE_BASE_OBJECT_INFO(RelayExprNode, BaseExprNode);
@@ -216,6 +224,10 @@ class RelayExprNode : public BaseExprNode {
  */
 class RelayExpr : public BaseExpr {
  public:
+  void set_backend(String backend) {
+    static_cast<RelayExprNode*>(get_mutable())->set_backend(std::move(backend));
+  }
+
   TVM_DEFINE_OBJECT_REF_METHODS(RelayExpr, BaseExpr, RelayExprNode);
 };
 
@@ -238,6 +250,7 @@ class GlobalVarNode : public RelayExprNode {
     v->Visit("virtual_device_", &virtual_device_);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const GlobalVarNode* other, SEqualReducer equal) const {

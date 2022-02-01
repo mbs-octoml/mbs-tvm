@@ -749,15 +749,24 @@ class TypeInferencer::Resolver : public MixedModeMutator, PatternMutator {
     }
 
     if (need_update_call) {
+      // Update the backend attribute
+      new_call->backend_ = static_cast<const T*>(op)->backend();
+
       new_call->type_args = it->second.type_args;
       for (size_t i = 0; i < new_call->type_args.size(); i++) {
         new_call->type_args.Set(i, solver_->Resolve(new_call->type_args[i]));
       }
     }
     if (need_update_var) {
+      // Update the backend attribute
+      new_var->backend_ = static_cast<const T*>(op)->backend();
+
       new_var->type_annotation = checked_type;
     }
     if (need_update_fn) {
+      // Update the backend attribute
+      new_fn->backend_ = static_cast<const T*>(op)->backend();
+
       auto* fn_type = checked_type.as<FuncTypeNode>();
       ICHECK(fn_type != nullptr);
       new_fn->ret_type = fn_type->ret_type;
@@ -947,6 +956,20 @@ Type InferTypeLocal(const Expr& expr) {
 
 TVM_REGISTER_GLOBAL("relay._transform.InferTypeLocal").set_body_typed([](const Expr& expr) {
   return InferTypeLocal(expr);
+});
+
+Expr InferTypeExpr(const Expr& expr) {
+  auto mod = IRModule::FromExpr(expr);
+  mod = transform::InferType()(mod);
+  if (expr.as<FunctionNode>()) {
+    return mod->Lookup("main");
+  } else {
+    return mod->Lookup("main").as<FunctionNode>()->body;
+  }
+}
+
+TVM_REGISTER_GLOBAL("relay._transform.InferTypeExpr").set_body_typed([](const Expr& expr) {
+  return InferTypeExpr(expr);
 });
 
 Pass InferType() {

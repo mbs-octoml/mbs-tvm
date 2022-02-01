@@ -51,6 +51,19 @@ class AlterTransformMemorizerNode : public TransformMemorizerNode {
  public:
   static constexpr const char* _type_key = "relay.alter_op_layout.AlterTransformMemorizerNode";
 
+  std::string GetBackendFromAnnotation(std::string backend_annotation) {
+    // e.g., backend_annotation: 0-tensorrt_conv2d
+    std::string delimiter = "-";
+    int delim_pos = backend_annotation.find(delimiter);
+
+    // This gives us "tensorrt_conv2d"
+    std::string backend = backend_annotation.substr(delim_pos+1);
+    delimiter = "_";
+    delim_pos = backend.find(delimiter);
+
+    return backend.substr(0, delim_pos);
+  }
+
   /*!
    * \brief Defines the call transformation for AlterOpLayout pass. The new layouts are defined by
    * used for different targets using a packed func.
@@ -66,7 +79,15 @@ class AlterTransformMemorizerNode : public TransformMemorizerNode {
 
     Expr new_e;
     bool modified = false;
-    if (falter_layout.count(op)) {
+
+    // Warning(@Soo): Second condition is added to prevent CuDNN op (Conv2d)
+    // from being altered to Winograd conv
+    // MKL (dense) op should be prevented from being altered to nn.contrib_dense_pack
+    bool is_cudnn_or_cublas_or_mkl = GetBackendFromAnnotation(ref_call->backend()) == "cudnn";
+    is_cudnn_or_cublas_or_mkl |= GetBackendFromAnnotation(ref_call->backend()) == "cublas";
+    is_cudnn_or_cublas_or_mkl |= GetBackendFromAnnotation(ref_call->backend()) == "mkl";
+
+    if (falter_layout.count(op) && !is_cudnn_or_cublas_or_mkl) {
       tvm::Array<tvm::te::Tensor> tinfos;
       for (auto expr : ref_call->args) {
         auto ttype = expr->type_as<TensorTypeNode>();
@@ -84,6 +105,7 @@ class AlterTransformMemorizerNode : public TransformMemorizerNode {
       new_e = Call(ref_call->op, new_args, new_attrs);
     }
 
+    new_e.set_backend(ref_call->backend());
     const CallNode* new_call = new_e.as<CallNode>();
     ICHECK(new_call) << "Can only replace the original operator with another call node";
     return GetRef<Call>(new_call);

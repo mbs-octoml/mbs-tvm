@@ -52,6 +52,21 @@ namespace relay {
 
 namespace partitioning {
 
+int NEW_BACKEND_GROUP_ID = 10000000;
+int NEW_BACKEND_GROUP_ID_EXT_COMPILER = 20000000;
+
+template <typename T>
+void UpdateBackendWithNewGroup(tvm::relay::Expr op) {
+  std::string new_backend = std::to_string(NEW_BACKEND_GROUP_ID++) + "-autotvm";
+  op.set_backend(new_backend);
+}
+
+template <typename T>
+void UpdateBackendWithNewGroupForExtCompiler(tvm::relay::Expr op) {
+  std::string new_backend = std::to_string(NEW_BACKEND_GROUP_ID_EXT_COMPILER++) + "-tensorrt";
+  op.set_backend(new_backend);
+}
+
 /*! \brief This struct maintains the required metadata for a region to generate a corresponding
  * global function and function call. Global function will be passed to the target specific codegen
  * and function call will be used in the transform Relay graph to invoke the function in runtime.
@@ -288,6 +303,11 @@ class Partitioner : public MixedModeMutator {
    */
   Call CreateRegionCall(AnnotatedRegion region, const Array<Expr>& fields,
                         const CallNode* end_node) {
+    // Warning(@Soo)
+    // This is kind of hacky; we exploit the fact that field[0] is always like
+    // e.g., CallNode(Op(nn.relu), 3-autotvm_relu, ...
+    String region_backend = fields[0]->backend();
+
     Array<Var> params;
     Array<Expr> param_expr;
     Map<Var, Expr> params_bind;
@@ -307,6 +327,14 @@ class Partitioner : public MixedModeMutator {
           Function(params, fields[0], end_node->args[0]->checked_type_, {}, DictAttrs());
     } else {
       auto tuple = Tuple(fields);
+
+      // Warning(@Soo): Is it ok to have one backend op for two or more tuple items
+      // from different backends? No - It causes error when fusing.
+      // Note that Tuple won't be fused by origianl fusion pass unless it's followed by Injective
+      // ops For now, let's not allow Tuple to be fused on our custom fusion pass not to cause
+      // trouble.
+      UpdateBackendWithNewGroup<TupleNode>(tuple);
+
       global_region_func = Function(params, tuple, tuple->checked_type_, {}, DictAttrs());
     }
 
@@ -346,6 +374,21 @@ class Partitioner : public MixedModeMutator {
 
     // Create a call node for the function.
     auto call = Call(glob_func, param_expr);
+
+    // Update the backend attribute
+    // I think it doesn't matter to assign any backend because
+    // 1) It's only applied to TensorRT operators
+    // 2) Tuple and TupleGetItem doesn't take time
+    //    std::cerr << "Func body: " << global_region_func->body << std::endl;
+    //    std::cerr << "Expression  : " << fields[0] << std::endl;
+    //    std::cerr << "Backend  : " << region_backend << std::endl;
+    std::string region_backend_str = region_backend;
+    if (!region_backend_str.compare("default")) {
+      UpdateBackendWithNewGroupForExtCompiler<CallNode>(call);
+    } else {
+      call.set_backend(region_backend);
+    }
+
     region_func_meta_[region].func_call = call;
 
     return call;
@@ -384,6 +427,15 @@ class Partitioner : public MixedModeMutator {
         int idx = pair.second;              // Corresponding function output tuple index.
         auto tuple_get_item = TupleGetItem(call, idx);
         tuple_get_item->checked_type_ = region_out_expr->checked_type_;
+
+        // Update backend with TupleGetItem
+        // I think it doesn't matter to assign any backend because
+        // 1) It's only applied to TensorRT operators
+        // 2) Tuple and TupleGetItem doesn't take time
+        String tuple_get_item_backend = fields[idx]->backend();
+        //        tuple_get_item.as_non_const<TupleGetItemNode>()->backend = tuple_get_item_backend;
+        UpdateBackendWithNewGroup<TupleGetItemNode>(tuple_get_item);
+
         region_func_meta_[region].region_func_out[region_out_expr] = tuple_get_item;
       }
     }
@@ -469,7 +521,9 @@ IRModule FlattenTupleOutputs(IRModule module) {
 
           // Return a tuple of compiler_ends in the place of the tuple that was
           // annotated with a compiler_end.
-          return WithFields(GetRef<Tuple>(tuple_node), new_fields);
+          auto out = WithFields(GetRef<Tuple>(tuple_node), new_fields);
+          UpdateBackendWithNewGroup<TupleNode>(out);
+          return std::move(out);
         }
       }
       return post;
@@ -548,8 +602,8 @@ class NameMangleExtFuncs : public MixedModeMutator {
     if (op_node == nullptr || mangled_gvars_.find(op_node->name_hint) == mangled_gvars_.end()) {
       return new_expr;
     } else {
-      return Call(mangled_gvars_[op_node->name_hint], new_call->args, new_call->attrs,
-                  new_call->type_args, new_call->span);
+      return WithFields(GetRef<Call>(call), mangled_gvars_[op_node->name_hint], new_call->args,
+                        new_call->attrs, new_call->type_args, {}, new_call->span);
     }
   }
 

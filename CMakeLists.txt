@@ -118,6 +118,9 @@ include_directories(SYSTEM ${DMLC_PATH})
 include_directories(SYSTEM ${RANG_PATH})
 include_directories(SYSTEM ${COMPILER_RT_PATH})
 include_directories(SYSTEM ${PICOJSON_PATH})
+if (USE_CUDNN)
+  include_directories(SYSTEM ${CUDNN_FRONTEND_PATH})
+endif()
 
 # initial variables
 set(TVM_LINKER_LIBS "")

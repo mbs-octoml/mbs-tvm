@@ -98,7 +98,8 @@ class PatternGrouper {
     return gid_assignments_;
   }
   /*! \brief Group expressions that match the pattern */
-  const std::unordered_map<int, Group>& GroupMatches(const DFPattern& pattern, const Expr& pre);
+  const std::unordered_map<int, Group>& GroupMatches(const DFPattern& pattern,
+                                                     const Expr& pre, String desired_backend = {});
 
  protected:
   /*! \brief Iteratively traverse the Expression in pre-order to find subgraphs
@@ -127,6 +128,7 @@ class PatternGrouper {
    */
   bool EmbedConst(const Expr& expr, const DFPattern pattern);
   // Internal State
+  String desired_backend_;
   DFPattern pattern_;
   std::unordered_map<int, Group> groups_;
   std::unordered_map<Expr, int, ObjectPtrHash, ObjectPtrEqual> gid_assignments_;

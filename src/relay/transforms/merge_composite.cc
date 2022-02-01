@@ -44,15 +44,16 @@ Function InferType(const Function& expr, const IRModule& m) {
 }
 
 Expr MergeComposite(const Function& func, const Array<runtime::String>& pattern_names,
-                    const Array<DFPattern>& patterns, const std::vector<PackedFunc>& checks,
-                    const IRModule& m) {
+                    const Array<DFPattern>& patterns, const Array<PackedFunc>& checks,
+                    String desired_backend, const IRModule& m) {
   ICHECK_EQ(pattern_names.size(), patterns.size());
   Function merged_func = func;
   // merge the patterns one-by-one in order
   for (size_t i = 0; i < patterns.size(); i++) {
     Map<String, ObjectRef> attrs;
     attrs.Set("Composite", pattern_names[i]);
-    merged_func = Downcast<Function>(PartitionPattern(patterns[i], merged_func, attrs, checks[i]));
+    merged_func = Downcast<Function>(
+        PartitionPattern(patterns[i], merged_func, attrs, checks[i], desired_backend));
     merged_func = InferType(merged_func, m);
   }
   return std::move(merged_func);
@@ -63,24 +64,28 @@ Expr MergeComposite(const Function& func, const Array<runtime::String>& pattern_
 namespace transform {
 
 Pass MergeComposite(const tvm::Array<runtime::String>& pattern_names,
-                    const tvm::Array<DFPattern>& patterns, const std::vector<PackedFunc>& checks) {
+                    const tvm::Array<DFPattern>& patterns, const tvm::Array<PackedFunc>& checks,
+                    const String& desired_backend) {
   runtime::TypedPackedFunc<Function(Function, IRModule, PassContext)> pass_func =
       [=](Function f, IRModule m, PassContext pc) {
-        return Downcast<Function>(
-            relay::merge_composite::MergeComposite(f, pattern_names, patterns, checks, m));
+        return Downcast<Function>(relay::merge_composite::MergeComposite(
+            f, pattern_names, patterns, checks, desired_backend, m));
       };
   auto func_pass = CreateFunctionPass(pass_func, 0, "MergeComposite", {});
   return func_pass;
 }
 
 TVM_REGISTER_GLOBAL("relay._transform.MergeComposite").set_body([](TVMArgs args, TVMRetValue* rv) {
-  tvm::Array<runtime::String> pattern_names = args[0];
-  tvm::Array<DFPattern> patterns = args[1];
-  std::vector<PackedFunc> checks;
-  for (int i = 2; i < args.size(); i++) {
+  int i = 0;
+  tvm::Array<runtime::String> pattern_names = args[i++];
+  tvm::Array<DFPattern> patterns = args[i++];
+  String desired_backend = args[i++];
+  Array<PackedFunc> checks;  // Seems Array<PackedFunc> can't cross FFI boundary so need to
+                             // inline into args
+  for (; i < args.size(); ++i) {
     checks.push_back(args[i]);
   }
-  *rv = MergeComposite(pattern_names, patterns, checks);
+  *rv = MergeComposite(pattern_names, patterns, checks, desired_backend);
 });
 
 }  // namespace transform

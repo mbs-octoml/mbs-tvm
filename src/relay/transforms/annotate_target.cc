@@ -43,13 +43,16 @@ static const char default_target[] = "default";
 // region that will be handled by a specific compiler.
 class AnnotateTargetRewriter : public ExprRewriter {
  public:
-  explicit AnnotateTargetRewriter(Array<runtime::String> targets) : targets_(std::move(targets)) {}
+  explicit AnnotateTargetRewriter(Array<runtime::String> targets, bool is_custom_annotation)
+      : targets_(std::move(targets)), is_custom_annotation_(is_custom_annotation) {}
 
  protected:
   /*! \brief The target backends for annotation. */
   Array<runtime::String> targets_;
   /*! \brief Maintain the decision of the target for each op expr. */
   std::unordered_map<Expr, std::string, ObjectPtrHash, ObjectPtrEqual> op_expr_to_target_;
+  /*! \brief The target backends for annotation. */
+  bool is_custom_annotation_ = false;
 
   /*!
    * \brief This function annotates a compiler end and a compiler begin to all arguments.
@@ -166,6 +169,11 @@ class AnnotateTargetRewriter : public ExprRewriter {
     return std::move(new_expr);
   }
 
+
+  bool IsValidTarget(const CallNode* pre, std::string target) {
+    return !is_custom_annotation_ || pre->OnBackend(target);
+  }
+
  public:
   Expr Rewrite_(const CallNode* pre, const Expr& post) override {
     // Supported targets for this node. The order implies the priority.
@@ -218,7 +226,7 @@ class AnnotateTargetRewriter : public ExprRewriter {
         }
         auto fannotate = Op::GetAttrMap<FTVMAnnotateTarget>("target." + std::string(target));
         const Expr& ex = GetRef<Expr>(pre);
-        if (fannotate.count(op) && fannotate[op](ex)) {
+        if (IsValidTarget(pre, target) && fannotate.count(op) && fannotate[op](ex)) {
           supported_targets.push_back(target);
         }
       }
@@ -233,7 +241,7 @@ class AnnotateTargetRewriter : public ExprRewriter {
         if (i != std::string::npos) {
           std::string comp_target = comp_name_str.substr(0, i);
           for (const auto& target : this->targets_) {
-            if (std::string(target) == comp_target) {
+            if (IsValidTarget(pre, target) && std::string(target) == comp_target) {
               supported_targets.push_back(comp_target);
               break;
             }
@@ -261,6 +269,10 @@ class AnnotateTargetRewriter : public ExprRewriter {
 
     // Update the target map.
     op_expr_to_target_[new_call] = target;
+
+    // Update the backend attribute
+    new_call.set_backend(pre->backend());
+
     return std::move(new_call);
   }
 
@@ -281,6 +293,8 @@ class AnnotateTargetRewriter : public ExprRewriter {
     auto target_n_args = AnnotateArgs(Array<Expr>({expr->tuple}));
     auto new_expr = TupleGetItem(std::get<1>(target_n_args)[0], expr->index);
     op_expr_to_target_[new_expr] = std::get<0>(target_n_args);
+    // Update the backend attribute
+    new_expr.set_backend(op->backend());
     return std::move(new_expr);
   }
 
@@ -312,6 +326,8 @@ class AnnotateTargetRewriter : public ExprRewriter {
       new_expr = Let(let->var, std::get<1>(target_n_args)[0], new_body);
     }
 
+    // Update the backend attribute
+    new_expr.set_backend(op->backend());
     return std::move(new_expr);
   }
 
@@ -322,6 +338,8 @@ class AnnotateTargetRewriter : public ExprRewriter {
     Expr new_false_branch = InsertCompilerEndAndPropogateTarget(expr->false_branch);
 
     auto new_expr = If(new_cond, new_true_branch, new_false_branch);
+    // Update the backend attribute
+    new_expr.set_backend(op->backend());
     return std::move(new_expr);
   }
 
@@ -331,6 +349,8 @@ class AnnotateTargetRewriter : public ExprRewriter {
     auto target_n_args = AnnotateArgs(Array<Expr>({expr->value}));
     auto new_expr = RefCreate(std::get<1>(target_n_args)[0]);
     op_expr_to_target_[new_expr] = std::get<0>(target_n_args);
+    // Update the backend attribute
+    new_expr.set_backend(op->backend());
     return std::move(new_expr);
   }
 
@@ -340,6 +360,8 @@ class AnnotateTargetRewriter : public ExprRewriter {
     auto target_n_args = AnnotateArgs(Array<Expr>({expr->ref}));
     auto new_expr = RefRead(std::get<1>(target_n_args)[0]);
     op_expr_to_target_[new_expr] = std::get<0>(target_n_args);
+    // Update the backend attribute
+    new_expr.set_backend(op->backend());
     return std::move(new_expr);
   }
 
@@ -349,6 +371,8 @@ class AnnotateTargetRewriter : public ExprRewriter {
     auto target_n_args = AnnotateArgs(Array<Expr>({expr->ref, expr->value}));
     auto new_expr = RefWrite(std::get<1>(target_n_args)[0], std::get<1>(target_n_args)[1]);
     op_expr_to_target_[new_expr] = std::get<0>(target_n_args);
+    // Update the backend attribute
+    new_expr.set_backend(op->backend());
     return std::move(new_expr);
   }
 };
@@ -357,8 +381,8 @@ class AnnotateTargetRewriter : public ExprRewriter {
 // in a program region that will be handled by a specific compiler.
 class CallOpsTargetRewriter : public AnnotateTargetRewriter {
  public:
-  explicit CallOpsTargetRewriter(Array<runtime::String> targets)
-      : AnnotateTargetRewriter(std::move(targets)) {}
+  explicit CallOpsTargetRewriter(Array<runtime::String> targets, bool is_custom_annotation)
+      : AnnotateTargetRewriter(std::move(targets), is_custom_annotation) {}
 
   std::unique_ptr<Call> RewriteVarCall(const Call& post_call) override {
     Array<Expr> ends;
@@ -416,10 +440,23 @@ class CallOpsTargetRewriter : public AnnotateTargetRewriter {
   }
 };
 
+bool IsCustomAnnotation(const Expr& expr) {
+  const auto* fn_node = expr.as<FunctionNode>();
+  ICHECK(fn_node);
+  return fn_node->GetAttr<IntImm>(attr::kCustomFusionPass).defined();
+}
+
 Expr AnnotateTarget(const Expr& expr, const Array<runtime::String>& targets,
                     bool include_non_call_ops) {
-  auto r = include_non_call_ops ? std::make_unique<AnnotateTargetRewriter>(targets)
-                                : std::make_unique<CallOpsTargetRewriter>(targets);
+  /*
+   * Warning(@Soo): Assume that we only use AnnotateTargetRewriter
+   * Default parameter is using AnnotateTargetRewriter
+   * And I don't see any cases using CallOpsTargetRewriter in TVM examples
+   */
+  bool is_custom_annotation = IsCustomAnnotation(expr);
+  auto r = include_non_call_ops
+               ? std::make_unique<AnnotateTargetRewriter>(targets, is_custom_annotation)
+               : std::make_unique<CallOpsTargetRewriter>(targets, is_custom_annotation);
   return PostOrderRewrite(expr, r.get());
 }
 
