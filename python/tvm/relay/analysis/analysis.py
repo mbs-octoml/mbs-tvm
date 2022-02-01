@@ -28,6 +28,20 @@ from . import _ffi_api
 from .feature import Feature
 
 
+def update_backend(expr, backend):
+    return _ffi_api.update_backend(expr, backend)
+
+
+def construct_dom_tree(expr, post_dom=False):
+    # 1. collect parent node of each op
+    # 2. get LCA of input nodes for each op. --> Dominator
+    return _ffi_api.dominance_analysis(expr, post_dom)
+
+
+def has_cycle(expr, matched_exprs, post_doms):
+    return _ffi_api.cycle_analysis(expr, matched_exprs, post_doms)
+
+
 def post_order_visit(expr, fvisit):
     """Recursively visit the ir in post DFS order node,
     apply fvisit. Each node is guaranteed to be visited
@@ -425,8 +439,8 @@ def get_calibration_data(mod, data):
         in_len = int(indices[1])
         out_len = int(indices[2])
         value = {
-            "inputs": ref_res[offset : offset + in_len],
-            "outputs": ref_res[offset + in_len : offset + in_len + out_len],
+            "inputs": ref_res[offset: offset + in_len],
+            "outputs": ref_res[offset + in_len: offset + in_len + out_len],
         }
         calib_data[gvar] = value
 

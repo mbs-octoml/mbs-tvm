@@ -86,6 +86,46 @@ static const Op& stop_fusion_op = Op::Get("annotation.stop_fusion");
 
 TVM_REGISTER_PASS_CONFIG_OPTION("relay.FuseOps.max_depth", Integer);
 
+int NEW_BACKEND_GROUP_ID_FUSE_PASS = 30000000;
+template <typename T>
+void UpdateBackendWithNewGroup(tvm::relay::Expr op) {
+  std::string new_backend = std::to_string(NEW_BACKEND_GROUP_ID_FUSE_PASS++) + "-autotvm";
+  op.set_backend(new_backend);
+}
+
+// PATCH(@Soo): New data type for group id and backend op name
+const std::string kInvalidBackendOp = "INVALID_BACKEND_OP";
+const std::string kInvalidGroupIdOpNamePair = "9999999-INVALID_BACKEND_OP";
+
+struct GroupIdOpNamePair {
+  /*! \brief The group id for operators that will be fused */
+  int group_id;
+  /*! \brief The backend operator name */
+  std::string backend_op_name;
+
+  // Example pair_str: "0-tvm-default_batchflatten"
+  // First number before '-' is the group id
+  GroupIdOpNamePair(const std::string pair_str) {
+    std::string delimiter = "-";
+    int delim_pos = pair_str.find(delimiter);
+    std::string group_id_str = pair_str.substr(0, delim_pos);
+
+    // Initialization
+    //        std::cerr << "pair_str: " << pair_str << std::endl;
+    //        std::cerr << "group_id_str: " << group_id_str << std::endl;
+    group_id = std::stoi(group_id_str);
+    backend_op_name = pair_str.substr(delim_pos + 1);
+    //        debug_print();
+  }
+
+  // Dummy constructor
+  GroupIdOpNamePair() : GroupIdOpNamePair(kInvalidGroupIdOpNamePair) {}
+
+  void debug_print() {
+    // std::cerr << "Pair: " << group_id << "," << backend_op_name << std::endl;
+  }
+};
+
 /*!
  * \brief Indexed data flow graph in forward direction.
  *  This is a temporary data structure used for operator fusion analysis.
@@ -118,6 +158,8 @@ class IndexedForwardGraph {
     OpPatternKind pattern{kOpaque};
     /*! \brief The outputs of the node. */
     LinkedList<Edge> outputs;
+    /*! \brief backend library to use. */
+    std::string backend;
   };
   /*! \brief The node map that maps node to graph */
   std::unordered_map<const tvm::Object*, Node*> node_map;
@@ -212,6 +254,10 @@ class IndexedForwardGraph::Creator : private ExprVisitor {
   void VisitExpr_(const ConstantNode* op) final {
     this->AddNode(op);
     Node* node = graph_.node_map.at(op);
+
+    // Add backend to node
+    node->backend = op->backend();
+
     DataType dtype = DataType(op->data->dtype);
     // This rule must be consistent with code generator.
     bool is_simple_const =
@@ -229,6 +275,10 @@ class IndexedForwardGraph::Creator : private ExprVisitor {
   void VisitExpr_(const CallNode* call) final {
     ICHECK(graph_.node_map.count(call));
     Node* node = graph_.node_map.at(call);
+
+    // Add backend to node
+    node->backend = call->backend();
+
     static auto fpattern = Op::GetAttrMap<TOpPattern>("TOpPattern");
     // Now we set the pattern of this call.
     //
@@ -282,6 +332,10 @@ class IndexedForwardGraph::Creator : private ExprVisitor {
       }
     }
     ExprVisitor::VisitExpr_(op);
+
+    // Add backend to node
+    tuple_node->backend = op->backend();
+
     this->AddNode(op);
   }
 
@@ -309,10 +363,17 @@ class IndexedForwardGraph::Creator : private ExprVisitor {
       this->Update(op->tuple, node, kInjective);
     }
     ExprVisitor::VisitExpr_(op);
+
+    // Add backend to node
+    graph_.node_map.at(op)->backend = op->backend();
+
     this->AddNode(op);
   }
 
-  void VisitExpr_(const VarNode* op) final { this->AddNode(op); }
+  void VisitExpr_(const VarNode* op) final {
+    graph_.node_map.at(op)->backend = op->backend();
+    this->AddNode(op);
+  }
 
   void VisitExpr_(const LetNode* op) final {
     // do not fuse through let.
@@ -508,12 +569,18 @@ DominatorTree DominatorTree::PostDom(support::Arena* arena, const IndexedForward
  */
 class GraphPartitioner {
  public:
-  explicit GraphPartitioner(support::Arena* arena, int opt_level, size_t max_fuse_depth)
-      : arena_(arena), opt_level_(opt_level), max_fuse_depth_(max_fuse_depth) {}
+  explicit GraphPartitioner(support::Arena* arena, int opt_level, size_t max_fuse_depth,
+                            bool is_custom_pass)
+      : arena_(arena),
+        opt_level_(opt_level),
+        max_fuse_depth_(max_fuse_depth),
+        is_custom_fusion_pass_(is_custom_pass) {}
   /*!
    * \brief Group as a union find data structure.
    */
   struct Group {
+    /*! \brief The corresponding backend operator name. */
+    std::string backend_op_name = kInvalidBackendOp;
     /*! \brief The parent in the union find data structure. */
     Group* parent{nullptr};
     /*! \brief The pattern of the group */
@@ -557,12 +624,19 @@ class GraphPartitioner {
   std::vector<Group*> Partition(const IndexedForwardGraph& graph);
 
  private:
+  /*! \brief The map between op_name and . */
+  std::unordered_map<int, IndexedForwardGraph::Node*> b_op_to_last_node_;
+  /*! \brief Whether current op is from tensorrt or not to allow wider variety of fusion */
+  bool is_tensorrt_op_ = false;
+
   /*! \brief The internal arena for temporary space. */
   support::Arena* arena_;
   /*! \brief optimization level for fuse operation. */
   int opt_level_;
   /*! \brief The maximum number of operations in one fused function */
   size_t max_fuse_depth_;
+  /*! \brief Whether it is our custom fusion pass or not */
+  bool is_custom_fusion_pass_ = false;
   /*! \brief The internal groups. */
   std::vector<Group*> groups_;
   /*! \brief internal field used for deduplication */
@@ -605,9 +679,13 @@ class GraphPartitioner {
     return true;
   }
   // Combine two patterns together.
-  static OpPatternKind CombinePattern(OpPatternKind lhs, OpPatternKind rhs) {
-    if (lhs > kBroadcast && rhs > kBroadcast) {
-      LOG(FATAL) << "Cannot merge two complex group together";
+  static OpPatternKind CombinePattern(OpPatternKind lhs, OpPatternKind rhs,
+                                      bool is_tensorrt = false) {
+    // For custom fusion pass, if it is TensorRT op, we should allow fusion
+    if (!is_tensorrt) {
+      if (lhs > kBroadcast && rhs > kBroadcast) {
+        LOG(FATAL) << "Cannot merge two complex group together";
+      }
     }
     if (lhs > rhs) return lhs;
     return rhs;
@@ -626,9 +704,11 @@ class GraphPartitioner {
     child->parent = parent;
     // update anchor ref and pattern
     if (child->anchor_ref != nullptr) {
+      // For custom fusion pass, if it is TensorRT op, we should allow fusion
+      if (!is_tensorrt_op_) ICHECK(parent->anchor_ref == nullptr);
       ICHECK(parent->anchor_ref == nullptr);
       parent->anchor_ref = child->anchor_ref;
-      parent->pattern = CombinePattern(child->pattern, parent->pattern);
+      parent->pattern = CombinePattern(child->pattern, parent->pattern, is_tensorrt_op_);
     }
   }
   // Internal implelementation of CommitFuse
@@ -640,8 +720,10 @@ class GraphPartitioner {
     ICHECK(gnode != nullptr);
     // merge the current group to the parent if possible.
     MergeFromTo(gnode, target);
-    for (auto link = src->outputs.head; link != nullptr; link = link->next) {
-      CommitFuse_(link->value.node, sink, target);
+    if (!is_custom_fusion_pass_) {
+      for (auto link = src->outputs.head; link != nullptr; link = link->next) {
+        CommitFuse_(link->value.node, sink, target);
+      }
     }
   }
   /*!
@@ -699,12 +781,82 @@ class GraphPartitioner {
     }
   }
 
+  bool IsTensorRTOp(std::string backend_op_name) {
+    int delim_pos = backend_op_name.find("_");
+    std::string backend_name = backend_op_name.substr(0, delim_pos);
+    bool is_tensorrt = false;
+    if (backend_name == "tensorrt") is_tensorrt = true;
+
+    return is_tensorrt;
+  }
+
+  // Fused based on backend operator matches from DP
+  void RunFuseWithMap(const IndexedForwardGraph& graph, const DominatorTree& post_dom_tree) {
+    VLOG_CONTEXT <<  "RunFuseWithMap";
+    LOG(INFO) << "Running fusion with map";
+    // WARNING(@Soo): We assume that fused ops are always continuous in the post dfs order.
+    // THIS IS NOT TRUE, e.g., conv+add+relu for ResNet-50.
+    //        std::cerr << "# of groups : " << groups_.size() << std::endl;
+
+    for (size_t nid = 0; nid < groups_.size(); ++nid) {
+      // the group of current node has been specified already.
+      auto* graph_node = graph.post_dfs_order[nid];
+      Group* group_node = groups_[nid];
+      ICHECK(group_node != nullptr);
+
+      //          std::cerr << "Group node (" << nid << ") pattern: " << group_node->pattern <<
+      //          std::endl;
+
+      // Assign backend op name
+      // WARNING(@Soo): We should assume that fused ops are not always opaque.
+      //          const tvm::Object* cur_key = graph_node->ref;
+      //          assert (graph.exprnode_to_backend_op.find(cur_key) !=
+      //          graph.exprnode_to_backend_op.end()); std::cerr << "Expr: " <<
+      //          GetRef<ObjectRef>(graph_node->ref) << std::endl;
+      //          PrintOpType(GetRef<ObjectRef>(graph_node->ref));
+      //          std::cerr << "backend: " << graph_node->backend << std::endl;
+      ICHECK(graph_node->backend.compare("default") != 0)
+          << "No backend was assigned for node " << nid << ": "
+          << GetRef<ObjectRef>(graph_node->ref);
+      GroupIdOpNamePair pair_info = GroupIdOpNamePair(graph_node->backend);
+      group_node->backend_op_name = pair_info.backend_op_name;
+
+      // Note that Var or Constant will be filtered out by this.
+      // Softmax is also kOpaque
+      if (group_node->pattern == kOpaque) continue;
+
+      // Commit fuse if there was previous node
+      // for correspding bakcend_op_id (= group_id)
+      int cur_group_id = pair_info.group_id;
+      if (b_op_to_last_node_.find(cur_group_id) != b_op_to_last_node_.end()) {
+        auto* prev_graph_node = b_op_to_last_node_[cur_group_id];
+        //            std::cerr << "-------------------------------------------------" << std::endl;
+        //            std::cerr << "cur_group id: " << cur_group_id << ", " <<
+        //                "Merge from "  << prev_graph_node->index << " to " << nid << std::endl;
+        is_tensorrt_op_ = IsTensorRTOp(pair_info.backend_op_name);
+        CommitFuse(prev_graph_node, graph_node);
+      }
+      b_op_to_last_node_[cur_group_id] = graph_node;
+    }
+
+    //        std::cerr << "------------------------------------" << std::endl;
+    //        for (size_t nid = 0; nid < groups_.size(); ++nid) {
+    //          Group* group_node = groups_[nid];
+    //          std::cerr << "\tGroup " << nid << " (root_group): " <<
+    //          GetRef<ObjectRef>(group_node->FindRoot()->root_ref) << std::endl;
+    //        }
+  }
+
   // execute the fusion algorithm.
   void RunFuse(const IndexedForwardGraph& graph, const DominatorTree& post_dom_tree, int phase) {
     for (size_t nid = 0; nid < groups_.size(); ++nid) {
       // the group of current node has been specified already.
       auto* graph_node = graph.post_dfs_order[nid];
       auto* dom_node = post_dom_tree.nodes[nid];
+
+      CHECK_EQ(graph_node->ref, dom_node->gnode->ref);
+      CHECK_EQ(graph_node, dom_node->gnode);
+
       Group* group_node = groups_[nid];
       ICHECK(group_node != nullptr);
       // no actions for opaque nodes
@@ -800,20 +952,31 @@ std::vector<GraphPartitioner::Group*> GraphPartitioner::Partition(
   if (opt_level_ == 0) return std::move(groups_);
   // get post dominator tree
   auto post_dom_tree = DominatorTree::PostDom(arena_, graph);
-  // run fusion algorithm.
-  for (int phase = 0; phase < 3; ++phase) {
-    this->RunFuse(graph, post_dom_tree, phase);
+
+  // If we don't use DP, execute original TVM fusion
+  if (!is_custom_fusion_pass_) {
+    // std::cerr << "original fusion pass" << std::endl;
+    //  run fusion algorithm.
+    for (int phase = 0; phase < 3; ++phase) {
+      this->RunFuse(graph, post_dom_tree, phase);
+    }
+  } else {
+    //        std::cerr << "Custom fusion pass" << std::endl;
+    this->RunFuseWithMap(graph, post_dom_tree);
   }
+
   return std::move(groups_);
 }
 
 class FuseMutator : private MixedModeMutator {
  public:
   // Run the transform
-  Expr Transform(const Expr& body, int fuse_opt_level, size_t max_fuse_depth) {
+  Expr Transform(const Expr& body, int fuse_opt_level, size_t max_fuse_depth,
+                 bool is_custom_pass = false) {
     // setup the group map.
     auto graph = IndexedForwardGraph::Create(&arena_, body);
-    auto groups = GraphPartitioner(&arena_, fuse_opt_level, max_fuse_depth).Partition(graph);
+    auto groups =
+        GraphPartitioner(&arena_, fuse_opt_level, max_fuse_depth, is_custom_pass).Partition(graph);
     for (size_t nid = 0; nid < graph.post_dfs_order.size(); ++nid) {
       ICHECK(graph.post_dfs_order[nid]->ref != nullptr);
       gmap_[graph.post_dfs_order[nid]->ref] = groups[nid];
@@ -905,7 +1068,7 @@ class FuseMutator : private MixedModeMutator {
     }
     // This tuple is an intermediate node in the group
     Array<Expr> new_fields = GetNewArguments(tuple_node->fields, ret_group);
-    return WithFields(GetRef<Tuple>(tuple_node), new_fields);
+    return Tuple(new_fields);  // TODO(mbs): No backend copy
   }
 
   Expr Rewrite_(const TupleGetItemNode* tuple_get, const Expr& post) {
@@ -983,6 +1146,8 @@ class FuseMutator : private MixedModeMutator {
     if (visitor.has_call && visitor.reshape_only) {
       func = WithAttr(std::move(func), attr::kReshapeOnly, tvm::Integer(visitor.reshape_only));
     }
+    // PATCH(@Soo): Add backend op attribute.
+    func = WithAttr(std::move(func), attr::kBackendOp, String(group->backend_op_name));
     return Call(func, ginfo.arguments, Attrs());
   }
 
@@ -1017,11 +1182,250 @@ class FuseMutator : private MixedModeMutator {
   }
 };
 
+// For op measurements, execute original fusion pass
+// For end-to-end measure, execute user-defined pass by using best match
+// from PlanFusionWithExtCompiler
 Expr FuseOps(const Expr& expr, int fuse_opt_level, size_t max_fuse_depth, const IRModule& module) {
-  return FuseMutator().Transform(expr, fuse_opt_level, max_fuse_depth);
+  // Debug: visualization
+  // auto vis_call = tvm::runtime::Registry::Get("collage.optimizer.visualize_expr");
+  // (*vis_call)(expr, "before_fusion");
+
+  // WARNING(@Soo): Assume that all exprs are function!
+  const auto* fn_node = expr.as<FunctionNode>();
+  ICHECK(fn_node);
+  bool is_custom_pass = false;
+  // Warning(@Soo) - every fusion should be done by saved match log regardless of algorithms!
+  // If you comment this line, we can try original fusion pass.
+  if (fn_node->GetAttr<IntImm>(attr::kCustomFusionPass).defined()) is_custom_pass = true;
+  auto fused_expr = FuseMutator().Transform(expr, fuse_opt_level, max_fuse_depth, is_custom_pass);
+  //      std::cerr << "[Done] FuseOps (is_custom_pass: " << is_custom_pass << ")" << std::endl;
+
+  // Debug: visualization
+  // std::string network_name = std::string(fn_node->GetAttr<String>("Network").value());
+  // auto vis_call2 = tvm::runtime::Registry::Get("collage.optimizer.visualize_expr");
+  // (*vis_call2)(fused_expr, network_name+"_after_fusion");
+  // (*vis_call2)(fused_expr, "after_fusion");
+
+  return fused_expr;
+}
+
+Expr InferBackendForConstantFunc(const Expr& expr) {
+  // WARNING(@Soo): Assume that all exprs are function!
+  const auto* fn_node = expr.as<FunctionNode>();
+  ICHECK(fn_node);
+  bool is_custom_pass = false;
+
+  // Warning(@Soo) - every fusion should be done by saved match log regardless of algorithms!
+  // If you comment this line, we can try original fusion pass.
+  if (fn_node->GetAttr<IntImm>(attr::kCustomFusionPass).defined()) is_custom_pass = true;
+
+  // Warning(@Soo): It only works for CHAIN FUSION PATTERN now
+  struct AssignNewOpGroupToBrokenChildren : ExprVisitor {
+    std::string parent_of_new_node_backend;
+    bool is_any_broken_children = false;
+
+    void Assign(std::string backend_name, const Expr& expr) {
+      is_any_broken_children = false;
+      parent_of_new_node_backend = backend_name;
+
+      this->VisitExpr(expr);
+      if (is_any_broken_children) ++NEW_BACKEND_GROUP_ID_FUSE_PASS;
+    }
+
+    void VisitExpr_(const CallNode* op) final {
+      if (op->backend().operator std::string().compare(parent_of_new_node_backend) == 0) {
+        is_any_broken_children = true;
+        // This needs to be updated to afford all other backends
+        // Not only the autotvm
+        std::string new_backend = std::to_string(NEW_BACKEND_GROUP_ID_FUSE_PASS) + "-autotvm";
+        GetRef<Expr>(op).set_backend(new_backend);
+        for (auto arg : op->args) {
+          this->VisitExpr(arg);
+        }
+      }
+    }
+  };
+
+  struct InferBackendForConstantVisitor : ExprVisitor {
+    String parent_backend_ = "default";
+
+    void VisitExpr_(const CallNode* op) final {
+      this->VisitSpan(op->span);
+      this->VisitExpr(op->op);
+
+      for (auto ty_arg : op->type_args) {
+        this->VisitType(ty_arg);
+      }
+
+      // Change backend if it is default and the op is "expand_dims"
+      // Let's block other ops than expand_dims to prevent side effects
+      if (op->backend().operator std::string().compare("default") == 0) {
+        if (const OpNode* op_node = op->op.as<OpNode>()) {
+          if (op_node->name == "expand_dims") {
+            GetRef<Expr>(op).set_backend(parent_backend_);
+          } else if (op_node->name == "layout_transform") {
+            // If layout_transform is a parent of Call, then we shouldn't fuse it with
+            // the following Call function; that's what TVM does.
+            // It is also faster without fusion.
+            // e.g., in one convolution test, it seems that fusion is slower than non-fusion case.
+            UpdateBackendWithNewGroup<CallNode>(GetRef<Expr>(op));
+
+            // If you want fusion with child or parent, use the code below
+            //                const CallNode* child_call = op->args[0].as<CallNode>();
+            //                auto child_backend = child_call->backend;
+            //                MutateBackendCopy(GetRef<Expr>(op), child_backend);
+            //                MutateBackendCopy(GetRef<Expr>(op), parent_backend_);
+
+            // Create new group id to children fused ops that are broken bu layout_transform
+            // Warning(@Soo): It only works for CHAIN FUSION PATTERN now
+            // We can safely assume that the input of layout transformation is always call node.
+            AssignNewOpGroupToBrokenChildren().Assign(parent_backend_.operator std::string(),
+                                                      op->args[0]);
+          } else {
+            ICHECK(0) << "Unexpected operator type (" << op_node->name << ") "
+                      << "with the backend of default"
+                      << "It is likely that this op was changed in AlterOpLayout";
+          }
+        }
+      }
+      //          std::cerr << "Parent backend : " << op->backend.operator std::string() <<
+      //          std::endl;
+      for (auto arg : op->args) {
+        parent_backend_ = op->backend();
+        this->VisitExpr(arg);
+      }
+    }
+
+    void VisitExpr_(const ConstantNode* op) final {
+      //          std::cerr << "Mutate backend : " << parent_backend_.operator std::string() <<
+      //          std::endl;
+      GetRef<Expr>(op).set_backend(parent_backend_);
+      ExprVisitor::VisitExpr_(op);
+    }
+  } visitor;
+
+  if (is_custom_pass) visitor(expr);
+  //      std::cerr << "[InferBackendForConstant] " << expr << std::endl;
+  //      std::cerr << "[Done] InferBackendForConstant" << std::endl;
+  return expr;
+}
+
+IRModule VisualizeIRFunc(IRModule module, String filename = "default") {
+  Expr expr = module->Lookup("main");
+  const auto* vis_call = tvm::runtime::Registry::Get("collage.optimizer.visualize_network_debug");
+  ICHECK(vis_call);
+  (*vis_call)(expr, filename);
+  return module;
+}
+
+/*
+ * Goal
+ * - Calculate best opeartor match depending on which algorithm we pick.
+ * - Dump best match into the log and let FuseOps pass read and apply it on IR.
+ */
+IRModule AssignBackendFunc(IRModule module) {
+  //      std::cerr << "Plan Fusion With ExtCompiler" << std::endl;
+  Expr expr = module->Lookup("main");
+  const FunctionNode* fn_node = expr.as<FunctionNode>();
+  ICHECK(fn_node);
+
+  // PATCH(@Soo): New custom fusion pass type
+  constexpr int kUserDefinedFusion = 0;
+  constexpr int kDP = 1;
+  constexpr int kExhaustiveSearch = 2;
+  constexpr int kTwoLevelOpt = 3;
+  constexpr int kOpMeasurement = 4;
+  constexpr int kSingleBackendBaseline = 5;
+  constexpr int kVisualizeBackendPlacement = 6;
+
+  // Do nothing when it's not custom fusion pass
+  if (fn_node->GetAttr<IntImm>(attr::kCustomFusionPass).defined()) {
+    int64_t custom_fusion_pass_type =
+        fn_node->GetAttr<IntImm>(attr::kCustomFusionPass).as<IntImmNode>()->value;
+    std::string custom_fusion_pass_str;
+    // PATCH(@Soo): Custom (DP) fusion pass for user defined fusion
+    if (custom_fusion_pass_type == kUserDefinedFusion) {
+      custom_fusion_pass_str = "collage.optimizer.get_user_fusion";
+      // PATCH(@Soo): Custom (DP) fusion pass for subprocess call during the end-to-end measurements
+      // Note that if fuse_opt_level == 0, no fusion applied no matter whether it's original or DP.
+    } else if (custom_fusion_pass_type == kDP) {
+      custom_fusion_pass_str = "collage.optimizer.run_dp";
+    } else if (custom_fusion_pass_type == kTwoLevelOpt) {
+      custom_fusion_pass_str = "collage.optimizer.run_two_level_opt";
+    } else if (custom_fusion_pass_type == kExhaustiveSearch) {
+      custom_fusion_pass_str = "collage.optimizer.run_exhaustive_search";
+    } else if (custom_fusion_pass_type == kOpMeasurement) {
+      custom_fusion_pass_str = "collage.optimizer.assign_backend_for_op_measurement";
+    } else if (custom_fusion_pass_type == kSingleBackendBaseline) {
+      custom_fusion_pass_str = "collage.optimizer.run_single_backend_baseline";
+    } else if (custom_fusion_pass_type == kVisualizeBackendPlacement) {
+      custom_fusion_pass_str = "collage.optimizer.visualize_backend_placement";
+    } else {
+      ICHECK(false) << "Fusion pass type " << fn_node->GetAttr<IntImm>(attr::kCustomFusionPass)
+                    << "is not expected\n\n";
+    }
+
+    LOG(INFO) << "Invoking " << custom_fusion_pass_str;
+    const auto* fdp_call = tvm::runtime::Registry::Get(custom_fusion_pass_str);
+    ICHECK(fdp_call);
+    // Note that we don't need this match
+    // because we dump this into the file and will load it for backend operator decision
+    // This is to prevent segmentation fault; still, we don't know whether this helps
+    (*fdp_call)(expr);
+    LOG(INFO) << "Done with " << custom_fusion_pass_str;
+    //        if (custom_fusion_pass_type != kUserDefinedFusion) {
+    //          Map<Expr, String> backend_op_match = (*fdp_call)(expr);
+    //        }
+    //        std::cerr << "Before extenral pass: " << expr << std::endl;
+
+    // Visualization of the network for sanity check
+    //        auto vis_call =
+    //        tvm::runtime::Registry::Get("collage.optimizer.visualize_network_debug"); Expr expr =
+    //        module->Lookup("main");
+    //        (*vis_call)(expr, "before_AssignTensorRT");
+    //        std::cerr << "[Done] Debug visualization" << std::endl;
+
+    // Apply external compiler ops first before we fuse operators
+    // just like what original TensorRT pipeline does.
+    LOG(INFO) << "Invoking " << "collage.optimizer.apply_external_compiler_op";
+    const auto* ex_op_call = tvm::runtime::Registry::Get("collage.optimizer.apply_external_compiler_op");
+    ICHECK(ex_op_call);
+    // Warning(@Soo): Doublecheck if module is updated.
+    module = (*ex_op_call)(module);
+    LOG(INFO) << "Done with " << "collage.optimizer.apply_external_compiler_op";
+    //        std::cerr << "[Done] PlanFusionWithExtCompiler" << std::endl;
+  }
+
+  //      std::cerr << "[Done] AlterOpLayout for TVM ops after PlanFusionWithExtCompiler" <<
+  //      std::endl;
+  return module;
 }
 
 namespace transform {
+Pass InferBackendForConstant() {
+  runtime::TypedPackedFunc<Function(Function, IRModule, PassContext)> infer_backend_func =
+      [=](Function f, IRModule m, PassContext pc) {
+        return Downcast<Function>(InferBackendForConstantFunc(f));
+      };
+
+  return CreateFunctionPass(infer_backend_func, 1, "InferBackendForConstant", {});
+}
+
+Pass VisualizeIR(String filename) {
+  // Custom Module pass to deal with external compiler, e.g., tensorrt
+  runtime::TypedPackedFunc<IRModule(IRModule, PassContext)> visualize_ir_func =
+      [=](IRModule m, PassContext pc) { return VisualizeIRFunc(m, filename); };
+  return CreateModulePass(visualize_ir_func, 0, "VisualizeIR", {});
+}
+
+Pass AssignBackend() {
+  // Custom Module pass to deal with external compiler, e.g., tensorrt
+  runtime::TypedPackedFunc<IRModule(IRModule, PassContext)> assign_backend_func =
+      [=](IRModule m, PassContext pc) { return AssignBackendFunc(m); };
+  return CreateModulePass(assign_backend_func, 0, "AssignBackend", {});
+}
+
+TVM_REGISTER_GLOBAL("relay._transform.AssignBackend").set_body_typed(AssignBackend);
 
 Pass FuseOps(int fuse_opt_level) {
   runtime::TypedPackedFunc<Function(Function, IRModule, PassContext)> pass_func =

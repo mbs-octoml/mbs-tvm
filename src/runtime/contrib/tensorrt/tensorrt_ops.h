@@ -106,6 +106,8 @@ struct TensorRTOpConverterParams {
 /*! \brief Base class for an op converter from Relay to TRT. */
 class TensorRTOpConverter {
  public:
+  virtual ~TensorRTOpConverter() =  default;
+
   /*! \brief Used to specify whether each input is tensor or weight. */
   const std::vector<TensorRTInputType> input_types;
   /*! \brief If set to true, any number of tensor inputs can be used for the op.

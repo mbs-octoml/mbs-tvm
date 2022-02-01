@@ -37,12 +37,45 @@ import logging
 import tvm.ir
 from tvm.relay import transform
 from tvm.relay.build_module import bind_params_by_name
+from tvm.relay.expr import Call, Constant, Tuple, GlobalVar, Var, TupleGetItem
 
 from ...dataflow_pattern import wildcard, is_op
 from .register import register_pattern_table
 
 logger = logging.getLogger("DNNL")
 
+
+def check_dynamism(args, op_name):
+    """
+    Check for dynamism inside any of the args in the op.
+
+    Parameters
+    ----------
+    args : tvm.ir.container.Array
+        Arguments of the op. Each of the argument shape is checked for presence of dynamic
+        components.
+    op_name: str
+        Name of the op for debugging purposes only.
+    Returns
+    ----------
+    ret : bool
+        True if dynamism is present, False otherwise
+    """
+    for arg in args:
+        if isinstance(arg, (Call, Var, Constant, TupleGetItem)):
+            for dim_shape in arg.checked_type.shape[1:]:
+                if isinstance(dim_shape, tvm.tir.expr.Any):
+                    return True
+        elif isinstance(arg, Tuple):
+            return check_dynamism(arg.fields, op_name)
+        else:
+            logger.info(
+                "Arg not supported in DNNL for %s with type %s",
+                op_name,
+                type(arg),
+            )
+            return True
+    return False
 
 def _register_external_op_helper(op_name, supported=True):
     """The helper function to indicate that a given operator can be supported
@@ -65,16 +98,57 @@ def _register_external_op_helper(op_name, supported=True):
 
     return _func_wrapper
 
+def _register_external_op_helper_with_checker(op_name, checker):
+    @tvm.ir.register_op_attr(op_name, "target.dnnl")
+    def _func_wrapper(expr):
+        attrs, args = expr.attrs, expr.args
+        # ops with dynamic shapes are offloaded to VM
+        if check_dynamism(args, op_name):
+            return False
+        if any([x.checked_type.dtype != "float32" for x in args]):
+            logger.info("Only float32 inputs are supported for DNNL.")
+            return False
+
+        return checker(attrs, args, op_name)
+
+    return _func_wrapper
+
 
 _register_external_op_helper("nn.batch_norm")
 _register_external_op_helper("nn.conv2d")
+_register_external_op_helper("nn.conv3d")
 _register_external_op_helper("nn.dense")
-_register_external_op_helper("nn.relu")
-_register_external_op_helper("tanh")
-_register_external_op_helper("sigmoid")
-_register_external_op_helper("add")
-_register_external_op_helper("multiply")
 
+
+def dim_check_fn(attrs, args, op_name):
+    shapes = [[int(x) if not isinstance(x, tvm.tir.expr.Any) else -1 for x in arg.checked_type.shape]   for arg in args]
+    if op_name == 'add':
+        for shape in shapes:
+            if len(shape) < 2:
+                return False
+
+            # @sunggg: Temp solution. Selectively disable adds in NasNetA
+            if shape == [1, 64, 56, 56] or shape == [1,128,28,28] or shape == [1, 256, 14, 14]:
+                return False
+
+
+    elif op_name == 'nn.relu':
+        for shape in shapes:
+            if len(shape)!=4:
+                return False
+    else:
+        raise Exception(f"Unsupported op for dim_check_fn {op_name}")
+
+    return True
+
+
+_register_external_op_helper_with_checker("add", dim_check_fn)
+_register_external_op_helper_with_checker("nn.relu", dim_check_fn)
+
+#_register_external_op_helper("tanh")
+#_register_external_op_helper("sigmoid")
+#_register_external_op_helper("subtract")
+#_register_external_op_helper("multiply")
 
 def make_conv_pattern(with_bias=True, with_eltwise=None):
     """Create patterns related to nn.conv2d.

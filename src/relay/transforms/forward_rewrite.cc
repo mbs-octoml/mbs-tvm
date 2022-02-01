@@ -105,11 +105,7 @@ class ForwardRewriter : private MixedModeMutator {
     if (const auto* ptuple = tuple.as<TupleNode>()) {
       return ptuple->fields[op->index];
     } else {
-      if (tuple.same_as(op->tuple)) {
-        return GetRef<Expr>(op);
-      } else {
-        return TupleGetItem(tuple, op->index);
-      }
+      return WithFields(GetRef<TupleGetItem>(op), tuple);
     }
   }
 
@@ -163,7 +159,7 @@ class ForwardRewriter : private MixedModeMutator {
       }
     }
     if (unchanged) return ref_call;
-    return Call(new_op, call_args, call_node->attrs, call_node->type_args, call_node->span);
+    return WithFields(GetRef<Call>(call_node), new_op, call_args);
   }
 };
 

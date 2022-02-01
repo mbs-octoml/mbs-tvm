@@ -230,6 +230,13 @@ Array<Pass> GetPassPrefix(bool is_homegeneous, bool is_vm) {
   pass_seqs.push_back(transform::CanonicalizeCast());
   pass_seqs.push_back(transform::CanonicalizeOps());
 
+  // FoldConstant needs to come ahead of AssignBackend for some networks (e.g., NasNet-A)
+  pass_seqs.push_back(transform::FoldConstant());
+  // InferType is needed for assigning backend and altering op layout
+  pass_seqs.push_back(transform::InferType());
+  // AssignBackend won't be executed if this is not a custom fusion build.
+  pass_seqs.push_back(transform::AssignBackend());
+
   // Alter layout transformation is currently only applied to homogeneous execution.
   if (is_homegeneous) {
     if (!is_vm) {
@@ -241,6 +248,7 @@ Array<Pass> GetPassPrefix(bool is_homegeneous, bool is_vm) {
   // Fast math optimizations.
   pass_seqs.push_back(transform::FastMath());
   pass_seqs.push_back(transform::FoldConstant());
+  pass_seqs.push_back(transform::InferBackendForConstant());
   return pass_seqs;
 }
 

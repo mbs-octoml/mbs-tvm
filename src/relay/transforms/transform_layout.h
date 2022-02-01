@@ -412,6 +412,7 @@ Expr LayoutRewriter(const Call& ref_call, const Array<Expr>& new_args, const Obj
   // (handle tuple output)
   if (ref_call->checked_type()->IsInstance<TupleTypeNode>()) {
     Expr tuple_output = Call(new_call->op, transformed_args, infer_out->new_attrs);
+    tuple_output.set_backend(new_call->backend());
     Array<Expr> fields;
     for (size_t i = 0; i < new_out.size(); ++i) {
       auto rnode = make_object<LayoutAlternatedExprNode<TransformMemorizerT>>();
@@ -421,11 +422,17 @@ Expr LayoutRewriter(const Call& ref_call, const Array<Expr>& new_args, const Obj
       rnode->memorizer = memorizer;
       fields.push_back(Expr(rnode));
     }
-    return Tuple(fields);
+    // Warning(@Soo) This may cause error because Tuple is not labeled with the backend.
+    // However, static int or global variable is not a good idea.
+    // Let's keep it as it is for now.
+    auto new_tuple = Tuple(fields);
+    //   UpdateBackendWithNewGroup<TupleNode>(new_tuple);
+    return new_tuple;
   } else {
     auto rnode = make_object<LayoutAlternatedExprNode<TransformMemorizerT>>();
     ICHECK_EQ(new_out.size(), 1);
     rnode->value = Call(new_call->op, transformed_args, infer_out->new_attrs, {}, ref_call->span);
+    rnode->value.set_backend(new_call->backend());
     rnode->old_layout = old_out[0];
     rnode->new_layout = new_out[0];
     rnode->memorizer = memorizer;

@@ -1,0 +1,120 @@
+TensorFlow 2.0 Upgrade Script
+-----------------------------
+Converted 8 files
+Detected 0 issues that require attention
+--------------------------------------------------------------------------------
+================================================================================
+Detailed log follows:
+
+================================================================================
+================================================================================
+Input tree: 'tfs-1.0/'
+================================================================================
+--------------------------------------------------------------------------------
+Processing file 'tfs-1.0/resnext50.py'
+ outputting to 'tfs-2.0/resnext50.py'
+--------------------------------------------------------------------------------
+
+26:8: INFO: Renamed 'tf.placeholder' to 'tf.compat.v1.placeholder'
+43:9: INFO: Renamed 'tf.ConfigProto' to 'tf.compat.v1.ConfigProto'
+46:62: INFO: Renamed 'tf.OptimizerOptions' to 'tf.compat.v1.OptimizerOptions'
+55:5: INFO: Renamed 'tf.Session' to 'tf.compat.v1.Session'
+57:17: INFO: tf.summary.FileWriter requires manual check. The TF 1.x summary API cannot be automatically migrated to TF 2.0, so symbols have been converted to tf.compat.v1.summary.* and must be migrated manually. Typical usage will only require changes to the summary writing logic, not to individual calls like scalar(). For examples of the new summary API, see the Effective TF 2.0 migration document or check the TF 2.0 TensorBoard tutorials.
+57:17: INFO: Renamed 'tf.summary.FileWriter' to 'tf.compat.v1.summary.FileWriter'
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Processing file 'tfs-1.0/nasrnn.py'
+ outputting to 'tfs-2.0/nasrnn.py'
+--------------------------------------------------------------------------------
+
+40:14: INFO: Renamed 'tf.placeholder' to 'tf.compat.v1.placeholder'
+47:9: INFO: Renamed 'tf.ConfigProto' to 'tf.compat.v1.ConfigProto'
+50:62: INFO: Renamed 'tf.OptimizerOptions' to 'tf.compat.v1.OptimizerOptions'
+55:5: INFO: Renamed 'tf.Session' to 'tf.compat.v1.Session'
+57:17: INFO: tf.summary.FileWriter requires manual check. The TF 1.x summary API cannot be automatically migrated to TF 2.0, so symbols have been converted to tf.compat.v1.summary.* and must be migrated manually. Typical usage will only require changes to the summary writing logic, not to individual calls like scalar(). For examples of the new summary API, see the Effective TF 2.0 migration document or check the TF 2.0 TensorBoard tutorials.
+57:17: INFO: Renamed 'tf.summary.FileWriter' to 'tf.compat.v1.summary.FileWriter'
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Processing file 'tfs-1.0/save_model.py'
+ outputting to 'tfs-2.0/save_model.py'
+--------------------------------------------------------------------------------
+
+17:8: INFO: Added keywords to args of function 'tf.transpose'
+18:8: INFO: Added keywords to args of function 'tf.transpose'
+19:8: INFO: Added keywords to args of function 'tf.transpose'
+23:13: INFO: Added keywords to args of function 'tf.transpose'
+29:8: INFO: Renamed 'tf.placeholder' to 'tf.compat.v1.placeholder'
+38:9: INFO: Renamed 'tf.ConfigProto' to 'tf.compat.v1.ConfigProto'
+42:5: INFO: Renamed 'tf.Session' to 'tf.compat.v1.Session'
+46:4: INFO: Renamed 'tf.saved_model.simple_save' to 'tf.compat.v1.saved_model.simple_save'
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Processing file 'tfs-1.0/bert.py'
+ outputting to 'tfs-2.0/bert.py'
+--------------------------------------------------------------------------------
+
+17:8: INFO: Added keywords to args of function 'tf.transpose'
+18:8: INFO: Added keywords to args of function 'tf.transpose'
+19:8: INFO: Added keywords to args of function 'tf.transpose'
+23:13: INFO: Added keywords to args of function 'tf.transpose'
+36:8: INFO: Renamed 'tf.placeholder' to 'tf.compat.v1.placeholder'
+45:9: INFO: Renamed 'tf.ConfigProto' to 'tf.compat.v1.ConfigProto'
+48:62: INFO: Renamed 'tf.OptimizerOptions' to 'tf.compat.v1.OptimizerOptions'
+53:5: INFO: Renamed 'tf.Session' to 'tf.compat.v1.Session'
+55:17: INFO: tf.summary.FileWriter requires manual check. The TF 1.x summary API cannot be automatically migrated to TF 2.0, so symbols have been converted to tf.compat.v1.summary.* and must be migrated manually. Typical usage will only require changes to the summary writing logic, not to individual calls like scalar(). For examples of the new summary API, see the Effective TF 2.0 migration document or check the TF 2.0 TensorBoard tutorials.
+55:17: INFO: Renamed 'tf.summary.FileWriter' to 'tf.compat.v1.summary.FileWriter'
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Processing file 'tfs-1.0/shared_functions.py'
+ outputting to 'tfs-2.0/shared_functions.py'
+--------------------------------------------------------------------------------
+
+27:13: INFO: Added keywords to args of function 'tf.nn.conv2d'
+27:13: INFO: Renamed keyword argument for tf.nn.conv2d from filter to filters
+35:13: INFO: Added keywords to args of function 'tf.nn.separable_conv2d'
+39:11: INFO: Added keywords to args of function 'tf.nn.avg_pool'
+39:11: INFO: Renamed keyword argument for tf.nn.avg_pool from value to input
+39:11: INFO: Renamed 'tf.nn.avg_pool' to 'tf.nn.avg_pool2d'
+42:11: INFO: Added keywords to args of function 'tf.nn.max_pool'
+42:11: INFO: Renamed keyword argument for tf.nn.max_pool from value to input
+42:11: INFO: Renamed 'tf.nn.max_pool' to 'tf.nn.max_pool2d'
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Processing file 'tfs-1.0/resnet50.py'
+ outputting to 'tfs-2.0/resnet50.py'
+--------------------------------------------------------------------------------
+
+22:8: INFO: Renamed 'tf.placeholder' to 'tf.compat.v1.placeholder'
+39:9: INFO: Renamed 'tf.ConfigProto' to 'tf.compat.v1.ConfigProto'
+42:62: INFO: Renamed 'tf.OptimizerOptions' to 'tf.compat.v1.OptimizerOptions'
+51:5: INFO: Renamed 'tf.Session' to 'tf.compat.v1.Session'
+53:17: INFO: tf.summary.FileWriter requires manual check. The TF 1.x summary API cannot be automatically migrated to TF 2.0, so symbols have been converted to tf.compat.v1.summary.* and must be migrated manually. Typical usage will only require changes to the summary writing logic, not to individual calls like scalar(). For examples of the new summary API, see the Effective TF 2.0 migration document or check the TF 2.0 TensorBoard tutorials.
+53:17: INFO: Renamed 'tf.summary.FileWriter' to 'tf.compat.v1.summary.FileWriter'
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Processing file 'tfs-1.0/nasnet_a.py'
+ outputting to 'tfs-2.0/nasnet_a.py'
+--------------------------------------------------------------------------------
+
+65:9: INFO: Renamed 'tf.placeholder' to 'tf.compat.v1.placeholder'
+79:9: INFO: Renamed 'tf.ConfigProto' to 'tf.compat.v1.ConfigProto'
+82:62: INFO: Renamed 'tf.OptimizerOptions' to 'tf.compat.v1.OptimizerOptions'
+91:5: INFO: Renamed 'tf.Session' to 'tf.compat.v1.Session'
+93:17: INFO: tf.summary.FileWriter requires manual check. The TF 1.x summary API cannot be automatically migrated to TF 2.0, so symbols have been converted to tf.compat.v1.summary.* and must be migrated manually. Typical usage will only require changes to the summary writing logic, not to individual calls like scalar(). For examples of the new summary API, see the Effective TF 2.0 migration document or check the TF 2.0 TensorBoard tutorials.
+93:17: INFO: Renamed 'tf.summary.FileWriter' to 'tf.compat.v1.summary.FileWriter'
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Processing file 'tfs-1.0/tune_relay_cuda.py'
+ outputting to 'tfs-2.0/tune_relay_cuda.py'
+--------------------------------------------------------------------------------
+
+135:29: INFO: Renamed 'tf.saved_model.loader.load' to 'tf.compat.v1.saved_model.loader.load'
+--------------------------------------------------------------------------------
+

@@ -64,6 +64,7 @@ class ConstructorNode : public RelayExprNode {
     v->Visit("tag", &tag);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
+    v->Visit("backend_", &backend_);
   }
 
   bool SEqualReduce(const ConstructorNode* other, SEqualReducer equal) const {

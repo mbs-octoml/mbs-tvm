@@ -70,6 +70,7 @@ Doc RelayTextPrinter::PrintOptionalInfo(const Expr& expr) {
       doc << annotated_expr;
     }
   }
+  doc << "/* " << expr->backend() << " */";
   return doc;
 }
 
