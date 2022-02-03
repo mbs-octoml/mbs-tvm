@@ -119,7 +119,7 @@ def check_dtype(lhs, rhs):
 def get_root_call(call, root_op_name):
     if not isinstance(call, relay.Call):
         return None
-    if str(call.op) == root_op_name:
+    if call.op.name == root_op_name:
         return call
     return get_root_call(call.args[0], root_op_name)
 

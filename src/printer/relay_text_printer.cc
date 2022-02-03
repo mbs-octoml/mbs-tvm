@@ -70,7 +70,6 @@ Doc RelayTextPrinter::PrintOptionalInfo(const Expr& expr) {
       doc << annotated_expr;
     }
   }
-  doc << "/* " << expr->backend() << " */";
   return doc;
 }
 
@@ -390,12 +389,20 @@ Doc RelayTextPrinter::VisitExpr_(const TupleNode* op) {
   if (op->fields.size() == 1) {
     doc << ",";
   }
-  return doc << ")";
+  doc << ")";
+  if (op->backend().compare("default") != 0) {
+    doc << "/* " << op->backend() << " */";
+  }
+  return doc;
 }
 
 Doc RelayTextPrinter::VisitExpr_(const TupleGetItemNode* op) {
   Doc doc;
-  return doc << Print(op->tuple) << "." << op->index;
+  doc << Print(op->tuple) << "." << op->index;
+  if (op->backend().compare("default") != 0) {
+    doc << "/* " << op->backend() << " */";
+  }
+  return doc;
 }
 
 Doc RelayTextPrinter::VisitExpr_(const IfNode* op) {
@@ -538,6 +545,9 @@ Doc RelayTextPrinter::VisitExpr_(const CallNode* op) {
     doc << "(" << Doc::Concat(args) << ")";
     if (op->span.defined()) {
       doc << " /* " << PrintSpan(op->span) << " */";
+    }
+    if (op->backend().compare("default") != 0) {
+      doc << "/* " << op->backend() << " */";
     }
     return doc;
   }
