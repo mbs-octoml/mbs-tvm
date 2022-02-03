@@ -73,7 +73,8 @@ import time
 
 import sys
 
-from workloads.torch_workloads import get_network_from_torch
+import collage
+from collage.workloads.torch_workloads import get_network_from_torch
 
 
 ####################################################################
@@ -176,8 +177,8 @@ if __name__ == "__main__":
     # Before tuning, we apply some configurations.
     ###########################################
     autotvm_tuning_option = {
-        "log_filename": "autotvm_tuning_log_bert_full_rtx3070.json",
-        "network": "bert_full",
+        "log_filename": "autotvm_tuning_log_bert_rtx3070.json",
+        "network": "bert",
         "batch_size": 1,
         "target": tvm.target.Target("nvidia/geforce-rtx-3070"),
         "target_host": tvm.target.Target("llvm"),
