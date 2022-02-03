@@ -36,6 +36,9 @@
 #  $ make -j8
 #--------------------------------------------------------------------
 
+set(CMAKE_BUILD_TYPE Debug)
+# set(CMAKE_BUILD_TYPE Release)
+
 #---------------------------------------------
 # Backend runtimes.
 #---------------------------------------------
@@ -46,7 +49,7 @@
 # - ON: enable CUDA with cmake's auto search
 # - OFF: disable CUDA
 # - /path/to/cuda: use specific path to cuda toolkit
-set(USE_CUDA OFF)
+set(USE_CUDA /usr/local/cuda-11.6)
 
 # Whether enable ROCM runtime
 #
@@ -85,7 +88,7 @@ set(USE_VULKAN OFF)
 set(USE_OPENGL OFF)
 
 # Whether enable MicroTVM runtime
-set(USE_MICRO OFF)
+set(USE_MICRO ON)
 
 # Whether enable RPC runtime
 set(USE_RPC ON)
@@ -112,7 +115,7 @@ set(USE_PIPELINE_EXECUTOR OFF)
 set(USE_PROFILER ON)
 
 # Whether enable microTVM standalone runtime
-set(USE_MICRO_STANDALONE_RUNTIME OFF)
+set(USE_MICRO_STANDALONE_RUNTIME ON)
 
 # Whether build with LLVM support
 # Requires LLVM version >= 4.0
@@ -122,7 +125,7 @@ set(USE_MICRO_STANDALONE_RUNTIME OFF)
 # - OFF: disable llvm, note this will disable CPU codegen
 #        which is needed for most cases
 # - /path/to/llvm-config: enable specific LLVM when multiple llvm-dev is available.
-set(USE_LLVM OFF)
+set(USE_LLVM /usr/llvm-11.1.0/bin/llvm-config)
 
 #---------------------------------------------
 # Contrib libraries
@@ -184,10 +187,11 @@ set(USE_EDGETPU OFF)
 # - ON: enable cuDNN with cmake's auto search in CUDA directory
 # - OFF: disable cuDNN
 # - /path/to/cudnn: use specific path to cuDNN path
-set(USE_CUDNN OFF)
+set(USE_CUDNN ON)
+set(CUDNN_FRONTEND_PATH /home/mbs/github/cudnn-frontend/include)
 
 # Whether use cuBLAS
-set(USE_CUBLAS OFF)
+set(USE_CUBLAS ON)
 
 # Whether use MIOpen
 set(USE_MIOPEN OFF)
@@ -215,7 +219,7 @@ set(USE_DNNL_CODEGEN OFF)
 #                       operators to Arm Compute Library. OFF/ON
 # USE_ARM_COMPUTE_LIB_GRAPH_EXECUTOR - Run Arm Compute Library annotated functions via the ACL
 #                                     runtime. OFF/ON/"path/to/ACL"
-set(USE_ARM_COMPUTE_LIB OFF)
+set(USE_ARM_COMPUTE_LIB ON)
 set(USE_ARM_COMPUTE_LIB_GRAPH_EXECUTOR OFF)
 
 # Whether to build with Arm Ethos-N support
@@ -242,14 +246,14 @@ set(USE_CMSISNN OFF)
 #                        offloaded to TensorRT. OFF/ON
 # USE_TENSORRT_RUNTIME - Support for running TensorRT compiled modules, requires presense of
 #                        TensorRT library. OFF/ON/"path/to/TensorRT"
-set(USE_TENSORRT_CODEGEN OFF)
-set(USE_TENSORRT_RUNTIME OFF)
+set(USE_TENSORRT_CODEGEN ON)
+set(USE_TENSORRT_RUNTIME /usr/share/doc/tensorrt-8.2.2.1)
 
 # Whether use VITIS-AI codegen
 set(USE_VITIS_AI OFF)
 
 # Build Verilator codegen and runtime
-set(USE_VERILATOR OFF)
+set(USE_VERILATOR ON)
 
 # Build ANTLR parser for Relay text format
 # Possible values:
@@ -259,7 +263,7 @@ set(USE_VERILATOR OFF)
 set(USE_ANTLR OFF)
 
 # Whether use Relay debug mode
-set(USE_RELAY_DEBUG OFF)
+set(USE_RELAY_DEBUG ON)
 
 # Whether to build fast VTA simulator driver
 set(USE_VTA_FSIM OFF)
@@ -356,11 +360,40 @@ set(USE_PAPI OFF)
 #   be enabled, otherwise it will be disabled.
 # Note that cmake will use `find_package` to find GTest. Please use cmake's
 # predefined variables to specify the path to the GTest package if needed.
-set(USE_GTEST AUTO)
+set(USE_GTEST ON)
 
 # Enable using CUTLASS as a BYOC backend
 # Need to have USE_CUDA=ON
-set(USE_CUTLASS OFF)
+set(USE_CUTLASS ON)
 
 # Enable to show a summary of TVM options
-set(SUMMARIZE OFF)
+set(SUMMARIZE ON)
+
+
+#####################################
+# CI Setup which differs from above #
+#####################################
+
+#
+# Leave these options unchanged
+#
+
+#set(USE_DNNL_CODEGEN ON)
+#set(USE_NNPACK ON)
+#set(NNPACK_PATH /NNPACK/build/)
+#set(USE_ANTLR ON)
+#set(HIDE_PRIVATE_SYMBOLS ON)
+#set(USE_VTA_TSIM ON)
+#set(USE_VTA_FSIM ON)
+#set(USE_TFLITE ON)
+#set(USE_TENSORFLOW_PATH \"/tensorflow\")
+#set(USE_FLATBUFFERS_PATH \"/flatbuffers\")
+#set(USE_ETHOSN /opt/arm/ethosn-driver)
+#set(USE_VITIS_AI ON)
+
+#
+# These two mimic the docker builds
+#
+
+#set(USE_CUDA /usr/local/cuda)
+#set(USE_LLVM /usr/bin/llvm-config-11)

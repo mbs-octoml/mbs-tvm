@@ -17,7 +17,7 @@ from tvm.contrib import graph_executor as runtime
 # Define Collage workload
 workload = {
     "optimizer": "op-level", 
-    "backends": ["autotvm", "cudnn", "cublas", "tensorrt"],
+    "backends": ["autotvm", "cudnn", "cublas", "tensorrt", "cutlass"],
     "network_name": "bert",
     "target": tvm.target.Target("nvidia/geforce-rtx-3070"),
     "batch_size": 1,
