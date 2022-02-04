@@ -74,7 +74,7 @@ import time
 import sys
 
 import collage
-from collage.workloads.torch_workloads import get_network_from_torch
+from collage.workloads.onnx_workloads import get_network_from_onnx
 
 
 ####################################################################
@@ -92,7 +92,8 @@ from collage.workloads.torch_workloads import get_network_from_torch
 
 def set_module_input(module, shape_dict, dtype):
     for input_name, input_shape in shape_dict.items():
-        module.set_input(input_name, tvm.nd.array((np.random.uniform(size=input_shape)).astype(dtype)))
+        module.set_input(input_name, tvm.nd.array(
+            (np.random.uniform(size=input_shape)).astype(dtype)))
 
 
 ###################################################################
@@ -137,7 +138,8 @@ def tune_autotvm_tasks(
 
         if use_transfer_learning:
             if os.path.isfile(tmp_log_file):
-                tuner_obj.load_history(autotvm.record.load_from_file(tmp_log_file))
+                tuner_obj.load_history(
+                    autotvm.record.load_from_file(tmp_log_file))
 
         # do tuning
         tsk_trial = min(n_trial, len(tsk.config_space))
@@ -160,7 +162,8 @@ def tune_autotvm_tasks(
 # Finally, we launch tuning jobs and evaluate the end-to-end performance.
 def tune_with_autotvm(tuning_opt):
     # extract workloads from relay program
-    mod, params, shape_dict, _ = get_network_from_torch(tuning_opt["network"], batch_size=tuning_opt["batch_size"])
+    mod, params, shape_dict, _ = get_network_from_onnx(
+        tuning_opt["network"], batch_size=tuning_opt["batch_size"])
 
     tasks = autotvm.task.extract_from_program(mod["main"], target=tuning_opt["target"],
                                               target_host=tuning_opt["target_host"], params=params)
@@ -177,17 +180,18 @@ if __name__ == "__main__":
     # Before tuning, we apply some configurations.
     ###########################################
     autotvm_tuning_option = {
-        "log_filename": "autotvm_tuning_log_bert_rtx3070.json",
-        "network": "bert",
+        "log_filename": "autotvm_tuning_log_gpt2_t4.json",
+        "network": "gpt2",
         "batch_size": 1,
-        "target": tvm.target.Target("nvidia/geforce-rtx-3070"),
+        "target": tvm.target.Target("nvidia/nvidia-t4"),
         "target_host": tvm.target.Target("llvm"),
         "tuner": "xgb",
         "n_trial": 2000,
         "early_stopping": 600,
         "measure_option": autotvm.measure_option(
             builder=autotvm.LocalBuilder(timeout=10),
-            runner=autotvm.LocalRunner(number=20, repeat=3, timeout=4, min_repeat_ms=150),
+            runner=autotvm.LocalRunner(
+                number=20, repeat=3, timeout=4, min_repeat_ms=150),
         ),
     }
     tune_with_autotvm(autotvm_tuning_option)

@@ -1,6 +1,6 @@
 import numpy as np
 import collage
-from collage.workloads.torch_workloads import get_network_from_torch
+from collage.workloads.onnx_workloads import get_network_from_onnx
 import tvm
 import logging
 from tvm.contrib import graph_executor as runtime
@@ -16,12 +16,12 @@ from tvm.contrib import graph_executor as runtime
 
 # Define Collage workload
 workload = {
-    "optimizer": "op-level", 
+    "optimizer": "op-level",
     "backends": ["autotvm", "cudnn", "cublas", "tensorrt", "cutlass"],
     "network_name": "bert",
-    "target": tvm.target.Target("nvidia/geforce-rtx-3070"),
+    "target": tvm.target.Target("nvidia/nvidia-t4"),
     "batch_size": 1,
-    "tuning_log": "autotvm_tuning_log_bert_full_rtx3070.json",
+    "tuning_log": "autotvm_tuning_log_gpt2_t4.json",
 }
 
 # Default logging level. Skip messages during optimization
@@ -30,6 +30,7 @@ workload = {
 # Enable logging to monitor optimization progress e.g., operator matching, profiling...
 logging.basicConfig(level=logging.INFO)
 
+
 def measure_perf(lib, workload):
     # Create workload
     dev = tvm.device(workload["target"].kind.device_type, 0)
@@ -37,13 +38,15 @@ def measure_perf(lib, workload):
 
     # Setup execution
     for input_name, input_shape in workload["shape_dict"].items():
-        input_data = np.random.uniform(-1, 1, size=input_shape).astype("float32")
+        input_data = np.random.uniform(-1, 1,
+                                       size=input_shape).astype("float32")
         module.set_input(input_name, input_data)
 
     # Measure performance
     ftimer = module.module.time_evaluator("run", dev, number=10, repeat=20)
     perfs = np.array(ftimer().results) * 1000
     return np.mean(perfs), np.std(perfs)
+
 
 def run_with_tensorrt(workload):
     from collage.backend.default_backends import cg_TensorRT
@@ -53,15 +56,17 @@ def run_with_tensorrt(workload):
 
 def setup_workload(workload):
     network_name, batch_size, target = \
-          workload["network_name"], workload["batch_size"], workload["target"]
+        workload["network_name"], workload["batch_size"], workload["target"]
 
-    mod, params, shape_dict, _ = get_network_from_torch(network_name, batch_size)
+    mod, params, shape_dict, _ = get_network_from_torch(
+        network_name, batch_size)
     # Since Collage utilizes tvm as its codegen, we need to pass the following info for tvm codegen.
     workload["mod"] = mod
     workload["params"] = params
     workload["shape_dict"] = shape_dict
 
     print(mod)
+
 
 if __name__ == "__main__":
     setup_workload(workload)
@@ -71,7 +76,8 @@ if __name__ == "__main__":
     # Operator cost will be logged at "operator_cost.log" by default.
     # If you want to start from scratch, delete previous log file for operator cost.
     # Since it is unreadable, users can dump human-readable form by passing 'dump_readable_cost_log = True'
-    collage_mod = collage.Module(op_cost_log_path = "operator_cost.log", dump_readable_cost_log = False)
+    collage_mod = collage.Module(
+        op_cost_log_path="operator_cost.log", dump_readable_cost_log=False)
     print(f"Default backends: {collage_mod.get_registered_backends()}\n")
 
     # Override the default tuning log
@@ -86,10 +92,13 @@ if __name__ == "__main__":
     print(f"# Performance of Collage is compared against TensorRT")
     print(f"  speedup = (performance of TensorRT)/(performance of Collage)")
     print(f"\n")
-    print(f"# Network: {workload['network_name']}, Collage optimizer: {workload['optimizer']}")
+    print(
+        f"# Network: {workload['network_name']}, Collage optimizer: {workload['optimizer']}")
     print(f"  * End-to-end performance")
-    print(f"    - Run with TensorRT (mean, std) = ({trt_mean_perf:.4f}+-{trt_std_perf:.4f})")
-    print(f"    - Run with Collage  (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
+    print(
+        f"    - Run with TensorRT (mean, std) = ({trt_mean_perf:.4f}+-{trt_std_perf:.4f})")
+    print(
+        f"    - Run with Collage  (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
 
     # Visualize backend placement optimized by op-level optimizer
     # If two-level optimization is enabled, users can also pass 'workload["input_placement_log_file"] = collage_mod.graph_level_placement_log'
@@ -102,19 +111,23 @@ if __name__ == "__main__":
         workload["backends"] = ["autotvm"]
         lib = collage_mod.optimize_backend_placement(**workload)
         collage_mean_perf, collage_std_perf = measure_perf(lib, workload)
-        print(f"    - Run with Collage  w/ 1 backend  (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
+        print(
+            f"    - Run with Collage  w/ 1 backend  (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
 
         workload["backends"] = ["autotvm", "cudnn"]
         lib = collage_mod.optimize_backend_placement(**workload)
         collage_mean_perf, collage_std_perf = measure_perf(lib, workload)
-        print(f"    - Run with Collage  w/ 2 backends (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
+        print(
+            f"    - Run with Collage  w/ 2 backends (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
 
         workload["backends"] = ["autotvm", "cudnn", "cublas"]
         lib = collage_mod.optimize_backend_placement(**workload)
         collage_mean_perf, collage_std_perf = measure_perf(lib, workload)
-        print(f"    - Run with Collage  w/ 3 backends (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
+        print(
+            f"    - Run with Collage  w/ 3 backends (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
 
         workload["backends"] = ["autotvm", "cudnn", "cublas", "tensorrt"]
         lib = collage_mod.optimize_backend_placement(**workload)
         collage_mean_perf, collage_std_perf = measure_perf(lib, workload)
-        print(f"    - Run with Collage  w/ 4 backends (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
+        print(
+            f"    - Run with Collage  w/ 4 backends (mean, std) = ({collage_mean_perf:.4f}+-{collage_std_perf:.4f}), Speedup: {trt_mean_perf/collage_mean_perf:.4f}x")
