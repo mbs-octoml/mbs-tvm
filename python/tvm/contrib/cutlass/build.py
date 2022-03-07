@@ -354,8 +354,6 @@ def tune_cutlass_kernels(
     return mod, num_cutlass_partition
 
 
-
-@register_func("tvm.relay.contrib.cutlass.tune_cutlass_function")
 def tune_cutlass_function(
         func,
         sm,
