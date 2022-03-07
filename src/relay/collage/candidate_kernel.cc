@@ -54,15 +54,11 @@ std::string CandidateKernelNode::ToString() const {
 
 Cost CandidateKernelNode::EstimatedCost(CostEstimator* cost_estimator) const {
   if (cost_.is_unknown()) {
-    VLOG(1) << "Estimating cost for spec " << fusion_spec_name() << " of:\n"
-            << PrettyPrint(function_);
-    {
-      VLOG_CONTEXT << "spec " << fusion_spec_name();
-      cost_ = cost_estimator->CachedEstimate(function_, target());
-    }
-    VLOG(1) << "Estimated cost is " << cost_.ToString();
+    VLOG_CONTEXT << "spec " << fusion_spec_name();
+    VLOG(1) << "Estimating cost of:\n" << PrettyPrint(function_);
+    cost_ = cost_estimator->CachedEstimate(function_, target());
   } else {
-    VLOG(1) << "Reusing cached cost " << cost_.ToString();
+    VLOG(1) << "Reusing cached cost";
   }
   return cost_;
 }
