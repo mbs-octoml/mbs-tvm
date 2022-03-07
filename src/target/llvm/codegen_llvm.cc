@@ -1263,7 +1263,7 @@ llvm::Value* CodeGenLLVM::VisitExpr_(const LetNode* op) {
 
 llvm::Value* CodeGenLLVM::VisitExpr_(const LoadNode* op) {
   LOG(FATAL) << "Unexpected deprecated LoadNode.  Use BufferLoadNode instead.";
-  return NULL;
+  return nullptr;
 }
 
 bool CodeGenLLVM::HasAlignmentPadding(DataType dtype) {

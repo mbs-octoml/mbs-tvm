@@ -403,20 +403,24 @@ std::pair<OpPatternKind, std::string> SubExprKindAndLabel(const Expr& sub_expr) 
         if (opt_i.defined()) {
           OpPatternKind kind = static_cast<OpPatternKind>(opt_i.value()->value);
           VLOG(1) << "TOpPattern for function is " << KindToString(kind);
-          return {kind, ""};
+          return {kind, "call_prim"};
         } else {
           VLOG(1) << "calling function without TOpPattern, considering opaque";
-          return {kOpaque, ""};
+          return {kOpaque, "call_fun"};
         }
       } else {
         VLOG(1) << "unsupported call, considering opaque";
-        return {kOpaque, ""};
+        return {kOpaque, "call_any"};
       }
     }
 
     std::pair<OpPatternKind, std::string> VisitExpr_(const ConstantNode* constant_node) final {
       VLOG(1) << "TOpPattern for constant is " << KindToString(kElemWise);
-      return {kElemWise, "const"};
+      if (IsSimpleScalar(constant_node)) {
+        return {kElemWise, "scalar"};
+      } else {
+        return {kElemWise, "const"};
+      }
     }
 
     std::pair<OpPatternKind, std::string> VisitExpr_(const TupleNode* tuple_node) final {
@@ -446,8 +450,42 @@ std::pair<OpPatternKind, std::string> SubExprKindAndLabel(const Expr& sub_expr) 
       }
     }
 
-    std::pair<OpPatternKind, std::string> VisitExprDefault_(const Object* op) final {
-      return {kOpaque, ""};
+    // TODO(mbs): We implement the following mostly so we have a lightweight way of describing
+    // the current sub-expression. If fusion is even extended beyond the usual call/tuple/proj
+    // sub-language we should revise the returned operator kinds to match.
+
+    std::pair<OpPatternKind, std::string> VisitExpr_(const VarNode* var_node) final {
+      return {kOpaque, "%" + var_node->name_hint()};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const GlobalVarNode* global_var_node) final {
+      return {kOpaque, "@" + global_var_node->name_hint};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const OpNode* op_node) final {
+      return {kOpaque, "`" + op_node->name};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const FunctionNode* function_node) final {
+      return {kOpaque, "fn"};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const LetNode* let_node) final {
+      return {kOpaque, "let"};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const IfNode* if_node) final {
+      return {kOpaque, "if"};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const RefCreateNode* ref_create_node) final {
+      return {kOpaque, "ref"};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const RefReadNode* op) final {
+      return {kOpaque, "ref_read"};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const RefWriteNode* op) final {
+      return {kOpaque, "ref_write"};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const ConstructorNode* op) final {
+      return {kOpaque, "`" + op->name_hint};
+    }
+    std::pair<OpPatternKind, std::string> VisitExpr_(const MatchNode* op) final {
+      return {kOpaque, "match"};
     }
   };
   return Visitor().VisitExpr(sub_expr);

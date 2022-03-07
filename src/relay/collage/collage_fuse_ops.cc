@@ -66,6 +66,18 @@ class SearchState {
 
   const IndexSet& covered() const { return covered_; }
 
+  std::string ToString() const {
+    std::ostringstream os;
+    os << "State(";
+    os << "covered=" << covered_.ToString();
+    os << ",best_cost=" << best_cost_.ToString();
+    if (best_candidate_kernel_.defined()) {
+      os << ",best_candidate_kernel=" << best_candidate_kernel_->ToString();
+    }
+    os << ")";
+    return os.str();
+  }
+
  private:
   /*! \brief Which nodes of overall expression have been placed on all paths to this state. */
   IndexSet covered_;
@@ -199,7 +211,9 @@ class Partitioner {
     index.Index(expr, fusion_specs, &name_supply);
     VLOG(1) << "Indexed " << index.size() << " candidate kernels";
     VLOG(1) << "Commencing search";
-    pq_.Push(GetState(IndexSet(dataflow_graph->size())));
+    SearchState* init_state = GetState(IndexSet(dataflow_graph->size()));
+    init_state->best_cost_ = Cost::Zero();
+    pq_.Push(init_state);
     while (!pq_.empty()) {
       SearchState* curr_state = pq_.Pop();
       VLOG(1) << "Looking at state " << curr_state->covered_.ToString();
@@ -221,7 +235,8 @@ class Partitioner {
         return partitioned;
       }
       size_t num_fires = 0;
-      VLOG(1) << "Looking at index " << next_index;
+      VLOG(1) << "Looking at index " << next_index << " for sub-expression "
+              << SubExprKindAndLabel(dataflow_graph->index_to_node(next_index)->ref()).second;
       for (const auto& candidate_kernel : index.candidate_kernels_at(next_index)) {
         VLOG(1) << "Considering candidate kernel " << candidate_kernel->ToString();
         if (!candidate_kernel->sub_graph_->inside_.AreDisjoint(curr_state->covered_)) {
@@ -238,7 +253,7 @@ class Partitioner {
         IndexSet next_covered =
             curr_state->covered_ | IndexSet(dataflow_graph->size(), {next_index});
         SearchState* next_state = GetState(next_covered);
-        Relax(curr_state, next_state, /*candidate_kernel=*/{});
+        Relax(curr_state, next_state, /*candidate=*/{});
       }
     }
     ICHECK(false) << "should have reached state in which all sub-expressions are covered";
@@ -278,29 +293,40 @@ class Partitioner {
   }
 
   /*!
-   * \brief Record that it is possible to \p next_state by applying \p candidate_kernel
-   * to \p curr_state. If the resulting cost is better than the best known
-   * so far, update this state's best costs, predecessor and kernel to match.
+   * \brief Record that it is possible to reach \p next_state by choosing \p candidate_kernel
+   * in \p curr_state. If the resulting cost is better than the best known so far, update
+   * \p next_state's best cost, predecessor and kernel to match.
    */
   void Relax(SearchState* curr_state, SearchState* next_state, CandidateKernel candidate) {
-    Cost candidate_cost;
+    Cost candidate_cost = Cost::Zero();
     if (candidate.defined()) {
       candidate_cost = candidate->EstimatedCost(&cost_estimator_);
+      VLOG(1) << "cost of " << candidate->ToString() << " is " << candidate_cost.ToString();
     }
     Cost new_state_cost = candidate_cost + curr_state->best_cost_;
     const bool is_new = next_state->best_cost_.is_invalid();
     if (is_new || new_state_cost < next_state->best_cost_) {
       next_state->pred_state_ = curr_state;
+      Cost previously_best_cost = next_state->best_cost_;
       next_state->best_cost_ = new_state_cost;
-      next_state->best_candidate_kernel_ = candidate;
+      CandidateKernel previously_best_candidate_kernel = next_state->best_candidate_kernel_;
+      next_state->best_candidate_kernel_ = std::move(candidate);
       if (is_new) {
+        VLOG(1) << "transition " << curr_state->ToString() << " --> " << next_state->ToString()
+                << " (New state)";
         pq_.Push(next_state);
       } else {
-        VLOG(1) << "Found better path!";
+        VLOG(1) << "transition " << curr_state->ToString() << " --> " << next_state->ToString()
+                << " (Beats "
+                << (previously_best_candidate_kernel.defined()
+                        ? previously_best_candidate_kernel->ToString()
+                        : "null")
+                << " of cost " << previously_best_cost.ToString() << ")";
         pq_.Update(next_state);
       }
     } else {
-      VLOG(1) << "Ignoring more expensive path";
+      VLOG(1) << "transition " << curr_state->ToString() << " --> " << next_state->ToString()
+              << " (Unchanged)";
     }
   }
 
