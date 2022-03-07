@@ -437,6 +437,9 @@ def dense_annotate_fn(expr):  # pylint: disable=unused-variable
     args = expr.args
     if not is_supported_trt_dtype(args):
         return False
+    if not isinstance(args[1], Constant):
+        logger.info("nn.dense: weight must be constant")
+        return False
     input_rank = len(args[0].checked_type.shape)
     weight_rank = len(args[1].checked_type.shape)
     if input_rank not in (2, 3, 4):
