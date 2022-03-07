@@ -844,21 +844,13 @@ class CutlassModuleCodegen : public CSourceModuleCodegenBase {
 };  // CutlassModuleCodegen
 
 /*!
- * \brief The external cutlass compiler/codegen tool. It takes a Relay
- * expression/module and compile it into a runtime module.
+ * \brief Compile a primitive function using the CUTLASS toolchain.
  */
-runtime::Module CutlassCompiler(Function function) {
-  // TODO(mbs): Entry point should be in Python, where to pick up sm level?
-  const runtime::PackedFunc* tune_cutlass_function =
-      runtime::Registry::Get("tvm.relay.contrib.cutlass.tune_cutlass_function");
-  ICHECK(tune_cutlass_function != nullptr);
-  VLOG(1) << "tuning with cutlass for:\n" << PrettyPrint(function);
-  function = (*tune_cutlass_function)(function, /*sm=*/80);
-  VLOG(1) << "generating cutlass code for:\n" << PrettyPrint(function);
+runtime::Module CreateCSourceModule(Function function) {
   return CutlassModuleCodegen().CreateCSourceModule(function);
 }
 
-TVM_REGISTER_GLOBAL("relay.ext.cutlass").set_body_typed(CutlassCompiler);
+TVM_REGISTER_GLOBAL("relay.ext.cutlass.create_c_source_module").set_body_typed(CreateCSourceModule);
 
 }  // namespace contrib
 }  // namespace relay

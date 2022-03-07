@@ -19,6 +19,7 @@
 import sys
 import os
 import subprocess
+import logging
 
 from .._ffi.base import py_str
 
@@ -238,6 +239,7 @@ def _linux_compile(output, objects, options, compile_cmd, compile_shared=False):
         cmd += objects
     if options:
         cmd += options
+    logging.info(f"invoking '{cmd}'")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     (out, _) = proc.communicate()
     if proc.returncode != 0:

@@ -354,8 +354,6 @@ def tune_cutlass_kernels(
     return mod, num_cutlass_partition
 
 
-
-@register_func("tvm.relay.contrib.cutlass.tune_cutlass_function")
 def tune_cutlass_function(
         func,
         sm,
@@ -547,3 +545,15 @@ def build_cutlass_kernels_vm(
     lib = tvm.runtime.load_module(lib_path)
     code = bytearray(open(vmcode_path, "rb").read())
     return tvm.runtime.vm.Executable.load_exec(code, lib)
+
+
+_create_c_source_module = tvm._ffi.get_global_func("relay.ext.cutlass.create_c_source_module")
+
+
+@register_func("relay.ext.cutlass")
+def cutlass_compiler(function):
+    # TODO(mbs): Get cutlass options from target annotation on function
+    sm = 80
+    function = tune_cutlass_function(function, sm)
+    mod = _create_c_source_module(function)
+    return build_cutlass_kernels(mod, sm)

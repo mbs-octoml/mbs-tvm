@@ -24,24 +24,51 @@
 
 #include "./name_supply.h"
 
+#include <algorithm>
 #include <sstream>
 
 namespace tvm {
 namespace relay {
 namespace collage {
 
+namespace {
+void AppendCSafe(bool& first, std::ostringstream& os, const std::string& str) {
+  for (size_t i = 0; i < str.size(); ++i) {
+    const char c = str[i];
+    if (i == 0 && first && (!std::isalpha(c) && c != '_')) {
+      os << "_";
+    }
+    if (c == '_' || std::isalnum(c)) {
+      os << c;
+    } else {
+      os << "_";
+    }
+    first = false;
+  }
+}
+}  // namespace
+
+NameSupply NameSupply::MakeSubNameSupply() {
+  NameSupply result(prefix_);
+  for (const auto& kv : next_free_index_) {
+    result.next_free_index_.emplace(kv.first, kv.second);
+  }
+  return result;
+}
+
 std::string NameSupply::Fresh(const std::initializer_list<std::string>& hints) {
   std::ostringstream os;
+  bool first = true;
   bool need_sep = false;
   if (!prefix_.empty()) {
-    os << prefix_;
+    AppendCSafe(first, os, prefix_);
     need_sep = true;
   }
   for (const auto& hint : hints) {
     if (need_sep) {
       os << "_";
     }
-    os << hint;
+    AppendCSafe(first, os, hint);
     need_sep = true;
   }
   std::string name = os.str();

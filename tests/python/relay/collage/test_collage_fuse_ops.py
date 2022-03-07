@@ -106,10 +106,8 @@ def from_onnx(model_file, input_shapes, input_dtypes):
     return input_shapes, input_dtypes, mod, params,
 
 
-def compile_and_benchmark(input_shapes, input_dtypes, mod, params, targets, dev, cutlass_hack=False):
+def compile_and_benchmark(input_shapes, input_dtypes, mod, params, targets, dev):
     exe = tvm.relay.vm.compile(mod, target=targets, params=params)
-    if cutlass_hack:
-        exe = build_cutlass_kernels_vm(exe, cutlass_sm)
     vm = tvm.runtime.vm.VirtualMachine(exe, dev)
     args = {
         input_name: tvm.nd.array(
@@ -162,7 +160,7 @@ def just_cutlass(input_shapes, input_dtypes, mod, params):
         logging.info("-------------- BEGIN PARTITIONED --------------")
         logging.info(mod)
         logging.info("-------------- END PARTITIONED ----------------")
-        compile_and_benchmark(input_shapes, input_dtypes, mod, params, targets, dev, cutlass_hack=True)
+        compile_and_benchmark(input_shapes, input_dtypes, mod, params, targets, dev)
 
 
 def just_tvm(input_shapes, input_dtypes, mod, params):
@@ -177,6 +175,6 @@ def just_tvm(input_shapes, input_dtypes, mod, params):
 
 
 if __name__ == "__main__":
-    #    just_trt(*from_onnx("/home/mbs/gauntlet/models/mnist-8.onnx", {"Input3": [1, 1, 28, 28]}, {"Input3": "float32"}))
+    #just_trt(*from_onnx("/home/mbs/gauntlet/models/mnist-8.onnx", {"Input3": [1, 1, 28, 28]}, {"Input3": "float32"}))
     #just_cutlass(*mnist())
     run(*mnist())
