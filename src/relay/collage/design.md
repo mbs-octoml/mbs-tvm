@@ -140,3 +140,16 @@ we've learned so far in the 'v2' prototype.
 - **Explainability**: It's easy to show the user the final placement and estimated times for each kernel, but harder to
   show why that placement won out over all others during search.
 
+## TODO in the 'v2' prototype
+
+- Implement extern-for-TVM support and bring in `cudnn` and `cublas`.
+- Finish `SubGraph` support for all of Relay.
+- Cross-check against one of the 'v1' models.
+- Bring up on `GPT2`.
+- Explore `float16` performance mixing `CUTLASS` and `TensorRT`.
+- Implement TVM tuning-on-the-fly.
+- Connect estimator to production cache.
+- Estimator in units of `IRModule` not `Function`. Resolve `params` binding question.
+- Find model+target combination that shows compelling speedup from mixing w.r.t. all other options, including
+  stand alone `TensorRT`.
+

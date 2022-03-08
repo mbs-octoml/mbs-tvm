@@ -19,7 +19,26 @@
 
 /*!
  * \file src/relay/collage/fusion_rule.h
- * \brief Fusion patterns and rules.
+ * \brief Compositional fusion rules.
+ *
+ * A \p FusionRule describes how to find a set of \p CandidateKernels for a \p DataflowGraph.
+ * The candidates are allowed to overlap, and ultimately it is the job of the Collage
+ * fusion searcher to find a selection of candidates which covers the whole Relay expression
+ * without overlap.
+ *
+ * We provide a set of 'primitive' rules which produce candidates from the dataflow graph
+ * directly. We also provide a set of 'combinator' rules which can produce new candidates
+ * from the results of an arbitrary sub-rule or sub-rules. In this way it is possible to
+ * combine the fusion rules to express a wide variety of fusion strategies, akin to the way
+ * we can combine TVM passes.
+ *
+ * There may be many thousands of candidates in flight during the fusion search.
+ *
+ * The primitive rules implemented so far:
+ *  - \p DFPatternFusion: Given a \p DFPattern, produces a candidate for every sub-graph
+ *    matched by the pattern. Unlike the \p PatternRewriter, it is valid for candidates
+ *    to overlap. This is the foundation for pattern-based BYOC integrations.
+ *
  */
 
 #ifndef SRC_RELAY_COLLAGE_FUSION_RULE_H_
