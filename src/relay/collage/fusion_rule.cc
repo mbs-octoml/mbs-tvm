@@ -19,7 +19,7 @@
 
 /*!
  * \file src/relay/collage/fusion_rule.cc
- * \brief Fusion patterns and rules.
+ * \brief Compositional fusion rules.
  */
 
 #include "./fusion_rule.h"
