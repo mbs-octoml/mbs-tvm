@@ -20,25 +20,6 @@
 /*!
  * \file src/relay/collage/fusion_rule.h
  * \brief Compositional fusion rules.
- *
- * A \p FusionRule describes how to find a set of \p CandidateKernels for a \p DataflowGraph.
- * The candidates are allowed to overlap, and ultimately it is the job of the Collage
- * fusion searcher to find a selection of candidates which covers the whole Relay expression
- * without overlap.
- *
- * We provide a set of 'primitive' rules which produce candidates from the dataflow graph
- * directly. We also provide a set of 'combinator' rules which can produce new candidates
- * from the results of an arbitrary sub-rule or sub-rules. In this way it is possible to
- * combine the fusion rules to express a wide variety of fusion strategies, akin to the way
- * we can combine TVM passes.
- *
- * There may be many thousands of candidates in flight during the fusion search.
- *
- * The primitive rules implemented so far:
- *  - \p DFPatternFusion: Given a \p DFPattern, produces a candidate for every sub-graph
- *    matched by the pattern. Unlike the \p PatternRewriter, it is valid for candidates
- *    to overlap. This is the foundation for pattern-based BYOC integrations.
- *
  */
 
 #ifndef SRC_RELAY_COLLAGE_FUSION_RULE_H_
@@ -68,7 +49,129 @@ using TPatternPredicate = TypedPackedFunc<bool(const Expr& matched_sub_expr)>;
  */
 bool DefaultPatternPredicate(const Expr& matched_sub_expr);
 
-/*! \brief Base class of all fusion rules. */
+/*! \brief Base class of all fusion rules.
+ *
+ * A \p FusionRule describes how to find a set of \p CandidateKernels for a \p DataflowGraph.
+ * The candidates are allowed to overlap, and ultimately it is the job of the Collage
+ * fusion searcher to find a selection of candidates which covers the whole Relay expression
+ * without overlap. Fusion rules are paired with their \p Target and other 'top level'
+ * configuration in a \p FusionSpec below.
+ *
+ * We provide a set of 'base' fusion rules which produce candidates from the dataflow graph
+ * directly. We also provide a set of 'combinator' rules which can produce new candidates
+ * from the results of an arbitrary sub-rule or sub-rules. In this way it is possible to
+ * combine the fusion rules to express a wide variety of fusion strategies, akin to the way
+ * we can combine TVM passes.
+ *
+ * There may be many thousands of candidates in flight during the fusion search. We take care
+ * to defer rewriting any Relay expressions (eg to extract the fused function, or partition
+ * the model) until absolutely necessary.
+ *
+ * The base rules implemented so far:
+ *  - \p DFPatternFusionRule: Given a \p DFPattern and expression predicate, produces a candidate
+ *    for every sub-graph matched by the pattern and predicate. Unlike the \p PatternRewriter,
+ *    candidates are free to overlap. This is the foundation for pattern-based BYOC integrations,
+ *    and can be used to write targeted fusion rules as well as find examples of 'composite'
+ *    operators.
+ *  - \p OpPredicateFusionRule: Given an attribute name, produces a candidate for every call
+ *    to a primitive Relay operator where the operator has predicate bound to that attribute which
+ *    returns true given the call sub-expression. Generally this will result in a singleton
+ *    sub-graph containing only the call, but it may pull in constant arguments to the call
+ *    should they be required. This is the foundation for operator-based BYOC integrations,
+ *    though we should consider retiring this mechanism in favor of pattern-based alone.
+ *  - \p SingletonByKindFusionRule: Uses the "TOpPattern" attribute provided for every Relay
+ *    operator to produce a candidate for every call to a 'fusable Relay operator'. This can
+ *    be used as the foundation for generic fusion patterns which work over all Relay operators
+ *    with particular properties (elementwise, broadcast, injective, reductive, anchor).
+ *
+ * The combinator rules implemented so far:
+ *  - \p CompositeFusionRule: 'Tags' the candidates matched by an arbitrary sub-rule with the
+ *    rule name. Tagged sub-graphs are turned into "Primitive" Function with the "Composite"
+ *    attribute bound to the tag. This can be used to indicate Relay operators (or groups of
+ *    Relay operators) are to be rewritten to specific target-specific operators. This combinator
+ *    wraps the \p DFPatternFusionRules for the pattern-based BYOC integrations. However it could
+ *    also be used with the default TVM backend, eg to indicate Relay operators should be
+ *    replaced with particular external library implementations.
+ *  - \p UnionFusionRule: Simply unions all the candidates from all sub-rules together. This is
+ *    how a set of, say, \p DFPatternFusionRules can be combined.
+ *  - \p CombineByKindFusionRule: Given a sub-rule and a list of 'primitive' rules, finds all
+ *    possible ways of combining the sub-rules candidates to yield even larger candidates.
+ *    Note that the sub-rule's candidates are included in the results -- that is every combination
+ *    of candidates is considered optional. The 'primitive' rules allow combining by
+ *    \p OpPatternKinds, as combining the arguments to tuples which themselves are arguments
+ *    to Relay operator calls. This rule is intended to mimic the existing TVM \p FuseOps pass,
+ *    though: i) all combinations are found, ii) the starting set of candidates can be provided
+ *    by any other rule (ie not just \p SingletonByKindFusionRule), and iii) we rely on \p SubGraph
+ *    validity checking to weed out infeasible candidates.
+ *
+ * Though not yet implemented, we'd like to allow a combinator rule which will union candidate
+ * based on their 'anchor' operators. This can be used to implement 'vertical' and 'horizontal'
+ * fusion on more primitive candidates. Note that the \p SubGraph machinery supports
+ * multiple-input and -output sub-graphs and their validation, so horizontal fusion is easy
+ * implement.
+ *
+ * We also have \p CoalesceFusionRule, which eagerly combines 'touching' candidates (ie candidates
+ * where the output of one sub-graph can be directly connected to the input of the other sub-graph)
+ * to form the largest possible candidate. The idea is once the search has been completed this
+ * rule can be used to collapse adjacent kernels intended for the same target.
+ *
+ * Here's some typical \p FusionRule combinations for different fusion strategies:
+ *  - Classic TVM \p FuseOps
+ *    \code
+ *       SingletonByKindFusionRule
+ *                 |
+ *                 v
+ *        CombineByKindFusionRule
+ *    \endcode
+ *
+ *  - Classic operator-based BYOC with \p AnnotateTarget/MergeCompilerRegions/PartitionGraph passes:
+ *    \code
+ *       OpPredicateFusionRule
+ *                 |
+ *                 v
+ *       CombineByKindFusionRule
+ *    \endcode
+ *
+ *  - Classic pattern-based BYOC with \p MergeComposite/AnnotateTarget/PartitionGraph passes:
+ *    \code
+ *
+ *      DFPatternFusionRule(pattern1)          ...     DFPatternFusionRule(patternn)
+ *                 |                                               |
+ *                 v                                               v
+ *       CompositeFusionRule(label1)           ...      CompositeFusionRule(labeln)
+ *                     \                                      /
+ *                      \                                    /
+ *                       v                                  v
+ *                                 UnionFusionRule
+ *                                       |
+ *                                       v
+ *                             CombineByKindFusionRule
+ *    \endcode
+ *
+ *  - "Just fuse what I tell you to fuse", using \p DFPatterns to directly select candidates:
+ *    \code
+ *      DFPatternFusionRule(pattern1)          ...     DFPatternFusionRule(patternn)
+ *                 |                                               |
+ *                 v                                               v
+ *                                 UnionFusionRule
+ *    \endcode
+ *
+ *  - "Consider this library implementation for these sub-expressions", using \p DFPatterns to
+ *    pick out which Relay operators are supported (note that TVM lowering does not currently
+ *    support this):
+ *    \code
+ *     SingletonByKindFusionRule   DFPatternFusionRule(pattern1) ... DFPatternFusionRule(patternn)
+ *                \                            |                                 |
+ *                 \                           v                                 v
+ *                  \               CompositeFusionRule(label1)  ...  CompositeFusionRule(labeln)
+ *                   \                         |                                 |
+ *                    v                        v                                 v
+ *                                       UnionFusionRule
+ *                                             |
+ *                                             v
+ *                                   CombineByKindFusionRule
+ *   \endcode
+ */
 class FusionRuleNode : public Object {
  public:
   /*!
@@ -482,7 +585,10 @@ using TRewriteSubGraphFunc = TypedPackedFunc<Optional<Function>(const Function& 
  */
 Optional<Function> DefaultRewriteSubGraphFunc(const Function& function);
 
-/*! \brief Collects all the information needed to explore fusion opportunities for a fixed target.
+/*!
+ * \brief Pairs a \p FusionRule with the \p Target it is intended for. We also allow the
+ * each candidate kernel function to be rewritten before the candidate is used for estimating
+ * kernel latency or included in the final 'parititoned' Relay expression.
  */
 class FusionSpecNode : public Object {
  public:

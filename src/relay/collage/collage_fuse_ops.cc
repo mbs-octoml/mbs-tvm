@@ -33,13 +33,14 @@
 #include <tvm/relay/transform.h>
 #include <tvm/target/target.h>
 
-#include "../collage/cost.h"
 #include "../ir/dataflow_matcher_impl.h"
-#include "candidate_kernel.h"
-#include "cost_estimator.h"
-#include "fusion_rule.h"
-#include "name_supply.h"
-#include "sub_graph.h"
+#include "./candidate_kernel.h"
+#include "./cost.h"
+#include "./cost_estimator.h"
+#include "./fusion_rule.h"
+#include "./name_supply.h"
+#include "./priority_queue.h"
+#include "./sub_graph.h"
 
 namespace tvm {
 namespace relay {
@@ -102,38 +103,10 @@ struct CompareSearchStatePtrs {
   }
 };
 
-/*! \brief Priority queue of search states, ordered by increasing cost. */
-class PriorityQueue {
- public:
-  PriorityQueue() = default;
-
-  /*! \brief Pushes \p state onto the queue. */
-  void Push(SearchState* state) { set_.emplace(state); }
-
-  /*! \brief Pops the state with the least ocst off the queue. */
-  SearchState* Pop() {
-    ICHECK(!set_.empty());
-    SearchState* state = *set_.begin();
-    set_.erase(set_.begin());
-    return state;
+struct EqualSearchStatePtrs {
+  bool operator()(const SearchState* left, const SearchState* right) const {
+    return left->covered() == right->covered();
   }
-
-  /*! \brief Updates the queue to account for \p state's best cost being lowered. */
-  void Update(SearchState* state) {
-    auto itr = std::find_if(set_.begin(), set_.end(), [&state](const SearchState* s) {
-      return s->covered() == state->covered();
-    });
-    ICHECK(itr != set_.end());
-    set_.erase(itr);
-    set_.emplace(state);
-  }
-
-  bool empty() const { return set_.empty(); }
-  size_t size() const { return set_.size(); }
-
- private:
-  // TODO(mbs): Use an updatable priority queue.
-  std::set<SearchState*, CompareSearchStatePtrs> set_;
 };
 
 /*!
@@ -197,18 +170,16 @@ class CandidateKernelIndex {
  */
 class Partitioner {
  public:
-  explicit Partitioner(CompilationConfig config) : config_(std::move(config)) {}
+  explicit Partitioner(const std::vector<FusionSpec>* fusion_specs) : fusion_specs_(fusion_specs) {}
 
-  Expr Partition(const Expr& expr) {
+  Expr Partition(Expr expr) {
     VLOG_CONTEXT << "Partitioning";
-    std::vector<FusionSpec> fusion_specs = GatherFusionSpecs();
-    VLOG(1) << "Gathered " << fusion_specs.size() << " fusion specs";
     std::unique_ptr<DataflowGraph> dataflow_graph = CreateIndexedGraph(expr);
     VLOG(1) << "Creating dataflow graph with " << dataflow_graph->size() << " nodes";
     // Index all the candidates (which will be owned by the index).
     CandidateKernelIndex index(dataflow_graph.get());
     NameSupply name_supply("collage");
-    index.Index(expr, fusion_specs, &name_supply);
+    index.Index(expr, *fusion_specs_, &name_supply);
     VLOG(1) << "Indexed " << index.size() << " candidate kernels";
     VLOG(1) << "Commencing search";
     SearchState* init_state = GetState(IndexSet(dataflow_graph->size()));
@@ -219,20 +190,19 @@ class Partitioner {
       VLOG(1) << "Looking at state " << curr_state->covered_.ToString();
       PostDfsIndex next_index = curr_state->covered_.FirstOutsideIndex();
       if (next_index >= dataflow_graph->size()) {
-        VLOG(1) << "Finished search, recovering least-cost candidates";
-        // The entire expression has been explored. Apply the best kernels walking backwards
-        // from the final state.
-        Expr partitioned = expr;
+        VLOG(1) << "Finished search, recovering best candidates";
+        // The entire expression has been explored. Collect the candidates on the optimal path.
+        std::vector<CandidateKernel> best_candidates;
         while (curr_state != nullptr) {
           if (curr_state->best_candidate_kernel_.defined()) {
             VLOG(1) << "Including best candidate "
                     << curr_state->best_candidate_kernel_->ToString();
-            partitioned =
-                curr_state->best_candidate_kernel_->Partition(*dataflow_graph, partitioned);
+            best_candidates.emplace_back(curr_state->best_candidate_kernel_);
           }
           curr_state = curr_state->pred_state_;
         }
-        return partitioned;
+        return CandidateKernel::ParallelPartition(std::move(dataflow_graph), std::move(expr),
+                                                  std::move(best_candidates));
       }
       size_t num_fires = 0;
       VLOG(1) << "Looking at index " << next_index << " for sub-expression "
@@ -258,26 +228,6 @@ class Partitioner {
     }
     ICHECK(false) << "should have reached state in which all sub-expressions are covered";
     return {};
-  }
-
-  /*!
-   * \brief Returns all the fusion specifications gathered from all targets in the compilation
-   * config.
-   */
-  std::vector<FusionSpec> GatherFusionSpecs() {
-    std::vector<FusionSpec> result;
-    for (const auto& target : config_->primitive_targets) {
-      // We implement this on the python side only so that we can get access to the BYOC
-      // pattern registry. Otherwise for the most part this implementation just bounces right
-      // back into the construction helpers in fusion_rule.cc.
-      static const runtime::PackedFunc* make_fusion_spec =
-          runtime::Registry::Get("tvm.relay.collage.make_fusion_spec");
-      ICHECK(make_fusion_spec);
-      FusionSpec spec = (*make_fusion_spec)(target);
-      VLOG(1) << "using spec:\n" << spec->ToString();
-      result.emplace_back(std::move(spec));
-    }
-    return result;
   }
 
   /*! \brief Returns the unique state corresponding to the \p covered sub-graph. */
@@ -331,21 +281,49 @@ class Partitioner {
   }
 
  private:
-  /*! \brief Available targets over which to explore. */
-  CompilationConfig config_;
+  /*! \brief Available fusion specs to use during search. */
+  const std::vector<FusionSpec>* fusion_specs_;
   /*! \brief Cost estimator to use for candidate kernels. */
   CostEstimator cost_estimator_;
   /*! \brief Map from covered sub-graphs to the corresponding state. */
   std::unordered_map<IndexSet, std::unique_ptr<SearchState>, IndexSetHash, IndexSetEqual>
       covered_to_state_;
   /*! \brief Priority queue of states, ordered by increasing cost. */
-  PriorityQueue pq_;
+  PriorityQueue<SearchState, CompareSearchStatePtrs, EqualSearchStatePtrs> pq_;
 };
+
+/*!
+ * \brief Returns all the fusion specifications gathered from all targets in the compilation
+ * config.
+ */
+std::vector<FusionSpec> GatherFusionSpecs(const CompilationConfig& config) {
+  std::vector<FusionSpec> result;
+  for (const auto& target : config->primitive_targets) {
+    // We implement this on the python side only so that we can get access to the BYOC
+    // pattern registry. Otherwise for the most part this implementation just bounces right
+    // back into the construction helpers in fusion_rule.cc.
+    static const runtime::PackedFunc* make_fusion_spec =
+        runtime::Registry::Get("tvm.relay.collage.make_fusion_spec");
+    ICHECK(make_fusion_spec);
+    FusionSpec spec = (*make_fusion_spec)(target);
+    VLOG(1) << "using spec:\n" << spec->ToString();
+    result.emplace_back(std::move(spec));
+  }
+  // TODO(mbs): Note that if we have multiple 'TVM' targets (eg for different devices) we'll end
+  // up finding the same candidates for each such. We should allow a FusionSpec to have multiple
+  // targets to avoid this, and rely on target refinement from the DevicePlanPass's assigned
+  // virtual devices to pick the one to actually use when estimating a candidate's cost.
+  return result;
+}
 
 }  // namespace
 
-transform::Pass CollageFuseOps(CompilationConfig compilation_config) {
-  auto pass_func = [=](Function function, IRModule mod, transform::PassContext ctxt) {
+transform::Pass CollageFuseOps(const CompilationConfig& compilation_config) {
+  std::vector<FusionSpec> fusion_specs = GatherFusionSpecs(compilation_config);
+  VLOG(1) << "Gathered " << fusion_specs.size() << " fusion specs";
+
+  auto pass_func = [fusion_specs = std::move(fusion_specs)](Function function, IRModule mod,
+                                                            transform::PassContext ctxt) {
     Optional<Bool> opt_enable = ctxt->GetConfig<Bool>("relay.collage.enable_collage", Bool(false));
     if (!opt_enable.value()) {
       VLOG(1) << "ignoring since collage is disabled";
@@ -364,7 +342,7 @@ transform::Pass CollageFuseOps(CompilationConfig compilation_config) {
       }
     }
     VLOG(1) << "Partitioning from:\n" << PrettyPrint(function);
-    collage::Partitioner partitioner(compilation_config);
+    collage::Partitioner partitioner(&fusion_specs);
     Function result = Downcast<Function>(partitioner.Partition(function));
     VLOG(1) << "Partitioned to:\n" << PrettyPrint(result);
     return result;
