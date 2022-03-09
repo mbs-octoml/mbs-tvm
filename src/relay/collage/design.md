@@ -2,11 +2,11 @@
 
 This design doc and accompanying
 ['v2' prototype implementation](https://github.com/mbs-octoml/mbs-tvm/tree/mbs-collage-sketch)
-shows how to bring tuning to TVM's operator fusion and BYOC partitioning passes. The tuning search explores the
-choice of sub-graphs as well as choice of toolchain (TVM native or one of the available BYOC integrations) for
-each candidate kernel so as to minimize the expected model inference latency. We call the result a 'placement'.
-This new tuning layer complements the tuning traditionally done by TVM and other toolchains during lowering. It
-can also complement any global tuning, for example to explore all possible global layouts. 
+shows how to bring tuning to TVM's operator fusion and BYOC partitioning passes. The tuning search explores the choice
+of sub-graphs as well as choice of toolchain (TVM native or one of the available BYOC integrations) for each candidate
+kernel so as to minimize the expected model inference latency. We call the result a 'placement'. This new tuning layer
+complements the tuning traditionally done by TVM and other toolchains during lowering. It can also complement any global
+tuning, for example to explore all possible global layouts.
 
 The approach is based on the [preprint](https://arxiv.org/pdf/2111.00655.pdf):
 
@@ -32,6 +32,8 @@ the `MergeComposite`/`AnnotateTarget`/`MergeCompilerRegions`/`PartitionGraph` pa
 operator predicates (provided for some operator/toolchain pairs by 'operator-based' BYOC integrations) and BYOC operator
 pattern/predicates (registered in the pattern table by 'pattern-based' BYOC integrations). In this way only the more
 boilerplate aspects of existing BYOC integrations need to be adjusted to support Collage.
+
+> NOTE: We'd like to coordinate or outsource these changes to the UMA project.
 
 Collage offers four advantages:
 
@@ -72,6 +74,104 @@ This design supersedes the
 earlier [draft](https://www.notion.so/octoml/Design-Doc-Collage-in-Main-f2306fb1ae7a4245ac0b3752bd244a1e) based on what
 we've learned so far in the 'v2' prototype.
 
+## Success Metrics
+
+1. Collage offers at least a 10% latency improvement for a selection of standard ONNX models and NVIDIA targets using
+   targets which include the CuDNN and CuBlas libraries, the CUTLASS libraries (with tuning, via BYOC), the TensorRT
+   compiler (via BYOC), and obviously TVM native.
+2. Collage does not require per-target or per-model patterns or rules to be implemented beyond those appropriate for the
+   BYOC integrations alone.
+3. Collage with a single BYOC enabled is never worse than simply partitioning for the BYOC as per TVM today.
+
+## Overview
+
+The implementation is mostly under `src/relay/collage/...` (namespace `tvm::relay::collage`), with some helper Python
+under `python/tvm/relay/collage`.
+
+If the `relay.collage.enable_collage` `PassConfig` attribute is true then the standard `FuseOps` pass is replaced by a
+new `CollageFuseOps` pass. The new pass effects the same invariant on the output as the old:
+
+> All Relay sub-graphs in all global functions which are to be lowered to a kernel are replaced by calls to an inline
+> `"Primitive"` `Function`. Functions which are to be lowered by a BYOC-provided toolchain are also annotated with
+> `"Compiler"` and `"global_symbol"` attributes.
+
+The `CollageFuseOps` pass proceeds in four phases:
+
+- **Phase 1**: The available `Target`s are scanned to build a list of `FusionSpec`s. Each `FusionSpec` is built from (
+  nested) `FusionRule`s. How the rules are constructed depends on `Target` itself. The remaining phases execute on each
+  global function separately.
+- **Phase 2**: A `DataflowGraph` is constructed for the global function. The available `FusionRule`s are evaluated on
+  the dataflow graph to yield a (possibly overlapping) set of `CandidateKernels` for each target. Each candidate is
+  described by a `SubGraph` which efficiently denotes a sub-graph of the global function's body without the need to
+  construct any new expressions. The candidates are placed in a `CandidateKernelIndex` for use below.
+- **Phase 3**: A shortest path is found in the following (implicit) search graph:
+    - Search Nodes: An `IndexSet` describing which dataflow nodes are been assigned to a candidate kernel.
+    - Search Edge X->Y: A `CandidteKernel` can be applied to node X to give node Y. The candidate is disjoint from all
+      dataflow nodes already accounted for in X. To avoid an unnecessary search space explosion the candidate must also
+      include the next yet-to-be-assigned dataflow node in X.
+    - Edge cost: Estimated latency of the candidate kernel, plus a kernel launch penalty. Note that though we need to be
+      able to extract the candidate's sub-graph in order to build the kernel, we do not need to partition the overall
+      function body expression.
+- **Phase 4**: The function body is partitioned according to the candidate kernels on the shortest path.
+
+We expand on these below.
+
+## Core Datatypes
+
+Before diving into the phases we describe some new datatypes:
+
+- `PostDfsIndex`: The integer index of a Relay sub-expression in a post-dfs traversal of the overall Relay expression.
+  If index i is less than index j then we know the sub-expression for j cannot influence the value of the sub-expression
+  for i.
+- `DataflowGraph`: This is ust the existing `IndexedGraph<Expr>` from the `DFPatternMatcher` suite (which in turn
+  is a reworked copy of the `IndexedGraph` private to `fuse_ops.cc`). It is used
+  throughout to manage the three-way bijection from Relay `ExprNode`s to `PostDfsIndex`s to
+  `DataflowGraph::Node`s. Each `DataflowGraph::Node` describes the sub-expression's dataflow inputs, outputs,
+  dominator and inverse-dominators.
+- `IndexSet`:  A bit vector indexed by `PostDfsIndex`s. These are used as a compact representation for an arbitrary
+  set of dataflow nodes in a dataflow graph.
+- `Cost`: A `double` representing a candidate kernel's 'cost', which currently is just mean execution latency in
+  seconds. The Collage system only cares that costs are additive and a total order so we could support, eg, cost
+  functions which balance execution time against high memory watermark or other measures. Costs may be `Unknown`
+  (ie NaN) to signal some other heuristic should be used to compare kernel costs. Costs may be `Invalid` (ie +inf)
+  to signal the toolchain could not compile and run a candidate kernel.
+
+
+
+## Phase 1
+
+We build on the existing TVM support for heterogeneous devices and targets. The available `Targets` are extracted from
+the compilation configuration (eg using the existing `CompilationConfig` helper class). Each target is inspected to
+decide on how to construct a `FusionSpec`, which will guide Collage in the selection of candidate kernels to explore for
+that target.
+
+- If the `Target` has a `"fusion_spec"` attribute, use that directly (not currently in the 'v2' prototype). This would
+  allow users to directly control fusion for the target's they care about.
+- If the `Target` has a `"compiler"` attribute (eg `"cutlass"`), and the global pattern table has an entry for that
+  attribute value, assume the `Target` denotes a pattern-based BYOC integration to explore. The `FusionSpec`
+  will import all the BYOC patterns and predicates automatically.
+- As above, but if global pattern has no matching entry, assume the `Target` denotes a predicate-based BYOC integration
+  to explore (eg `"tensorrt"`). The `FusionSpec` will look for and evaluate predicates with the
+  `"target.<compiler>"` attribute on all Relay operators.
+- Otherwise, assume the `Target` denotes a TVM-native target. The `FusionSpec` mimics the existing `FuseOps`, but now
+  generalized to explore multiple candidates so as to leave room for possible BYOC candidates.
+
+Note that to make this approach work we need to allow for multiple `Target`s with the same `DLDeviceKind`. For the VM
+simply switching the `target` argument from dictionary to list and removing some redundant Python preprocessing code was
+all that was required to support this.
+
+The user can use `on_device` annotations to constrain sub-graphs to particular devices. When Collage is considering
+candidate kernels, it should be sure to choose a candidate `Target` which 'refines' the `Target` for every
+sub-expression discovered by the `PlanDevicesPass`. Given targets T and U we say 'T refines U' if T has a
+'"compiler"' and/or '"fusion_spec"' attributes, U has no such attributes, and T and U otherwise agree on all other
+fields. (This is not currentl in the 'v2' prototype).
+
+## Phase 2
+
+## Phase 3
+
+## Phase 4
+
 ## Known Limitations
 
 - **Some BYOC boilerplate changes required**: TVM's current BYOC integration API only requires the 'lowering/codegen'
@@ -84,16 +184,14 @@ we've learned so far in the 'v2' prototype.
       included in a candidate kernel. Thus a BYOC integration will need to be 'robustified' to become 'Collage
       compatible'.
 - **Higher tuning cost**: Obviously Collage needs to estimate the latency of many more candidate kernels, and each
-  candidate may itself trigger tuning during lowering. For TVM this can require `O(thousands)` of  trials and take
-  `O(hours)`, so we'll be very dependent on cached tuning logs to amortize this cost between models for the same
-  target.
+  candidate may itself trigger tuning during lowering. For TVM this can require `O(thousands)` of trials and take
+  `O(hours)`, so we'll be very dependent on cached tuning logs to amortize this cost between models for the same target.
 - **Task extraction vs Tuning**: Traditionally TVM has had three phases: i) Task extraction (find the fused sub-graphs
-  to tune), ii) Tuning (find a good schedule for those sub-graphs), and iii) Compilation (re-compile the model, now 
+  to tune), ii) Tuning (find a good schedule for those sub-graphs), and iii) Compilation (re-compile the model, now
   retrieving schedules for all the anticipated sub-graphs from the cache.) However the Collage 'v2' prototype collapses
   all these phases. This lets us lazily explore the implied search graph (nodes = partially rewritten models, edges =
-  selected of sub-graph and toolchain as a candidate kernel, cost = estimated sum of kernel costs plus launch
-  penalties), and thus only pay the cost of tuning candidate kernels which could possibly influence the final
-  placement.
+  selected of sub-graph and toolchain as a candidate kernel, cost = estimated sum of kernel costs plus launch penalties)
+  , and thus only pay the cost of tuning candidate kernels which could possibly influence the final placement.
 - **No per-candidate rewriting**: Though Collage can explore the choice of sub-graph and toolchain, it cannot explore
   any additional rewrites to apply to the arguments or result of that sub-graph. So, for example, Collage cannot be used
   to search over the choice of layout for a kernel since any choice other than the model's default must be
@@ -150,6 +248,148 @@ we've learned so far in the 'v2' prototype.
 - Implement TVM tuning-on-the-fly.
 - Connect estimator to production cache.
 - Estimator in units of `IRModule` not `Function`. Resolve `params` binding question.
-- Find model+target combination that shows compelling speedup from mixing w.r.t. all other options, including
-  stand alone `TensorRT`.
+- Find model+target combination that shows compelling speedup from mixing w.r.t. all other options, including stand
+  alone `TensorRT`.
+- Implement Target refinement so that device planning can be used to constrain the available Collage targets to consider
+  for arbitrary sub-graphs. Allow multiple targets per `FusionSpec` so that we don't waste time finding the same
+  candidates for different TVM targets.
+- 'Lookahead' from the current search state to find the 'next' dataflow node(s) which have candidates crossing multiple
+  `FusionSpec`s. That defines a sub-graph. There's no need to search over all possible candidates within that sub-graph
+  since almost certainly the maximal candidates will be best. Somehow prune the candidates to implement that.
+- How much of the existing \p DFPattern machinery should be refactored to go via \p SubGraph?
+- Post fusion passes introduce new Relay primitives which then need to be fused and lowered. Do we retain `FuseOps` as a
+  fallback or let Collage run in a simplified mode?
+- `Target`s can have a `"fusion_spec"` attribute to directly control fusion.
 
+## Sub-project: Robust candidate kernel latency measurement
+
+Collage requires an implementation of a `CostEstimator`:
+
+```
+class CostEstimator {
+ public:
+  /*!
+   * \brief Return the estimated cost (possibly after many many minutes of training time) of
+   * running \p function using \p target.
+   */
+  virtual Cost Estimate(const Function& function, const Target& target) const;
+}
+```
+
+The 'v2' prototype has implemented this with an in-memory cache and a small Python driver which defers to
+TVM's `tvm.runtime.vm.VirtualMachine`s `benchmark` helper. The following needs to be designed and implemented:
+
+- Compilation should be in units of `IRModule` rather than `Function` so that, in the future, additional global
+  definitions (such as for weights) can be conveyed to the toolchain.
+- The recent MetaSchedule work has provided `BuilderInput` (`include/tvm/meta_schedule/builder.h`),
+  `RunnerInput` (`include/tvm/meta_schedule/runner.h`) and `Database` (`include/tvm/meta_schedule/database.h`)
+  interfaces. The latter is for `TuningRecord`s of `Workload`s. It looks like these interfaces can support the
+  measurement of Collage `CandidateKernel`s with minor changes.
+- (Internal to OctoML) We need an implementation connecting to the internal OctoML kernel tuning workflow and production
+  cache. Ideally this would be the same implementation as for the MetaSchedule system.
+- Collage converts measured 50th %ile latencies to costs in seconds. We may need to consider taking a slightly higher
+  %ile to be more robust against variance on small kernels. We need to validate the estimated variance reflects true
+  variance.
+- For TVM-native targets, we would like the `Estimate` call to perform any TVM tuning required for a novel candidate
+  kernel.
+
+## Sub-project: Easier Library Integration
+
+TVM has two very different ways to make external library implementations available for use by kernels: The pattern-based
+BYOC approach and the TVM `te.extern` approach.
+
+The pattern-based approach allows library implementations to match with more than one Relay operator, such as for biased
+convolution with an activation function. For example, for
+[DNNL](https://oneapi-src.github.io/oneDNN/v1.3/index.html) the global pattern table is extended
+in `python/tvm/relay/op/contrib/dnnl.py`, and the pattern labels indicate the intended corresponding DNNL functions. The
+user is responsible for partitioning using the usual `MergeComposite`/`AnnotateTarget`/`PartitionGraph`
+sequence. The `relay.ext.dnnl` BYOC function in `src/relay/backend/contrib/dnnl/codegen.cc` looks for calls to
+`"Composite"` functions in the overall `"Primitive"` function, and dispatches based on the `"Composite"` label. C code
+is emitted to target the DNNL library, and the standard C compiler helper is invoked to produce a
+`runtime::Module`.
+
+Note that it is not possible for a TVM-generated kernel to call a library function integrated this way. In effect every
+library function must go into a library-specific kernel (though kernels may group calls to multiple library function).
+
+The `te.extern` approach only allows library implementations which are 1:1 with Relay operators. However the library may
+be used as part of a larger TVM-generated kernel, and the usual TVM tuning machinery may choose to use the library based
+on overall kernel performance measured during TVM tuning. For example, `batch_matmul`
+can be implemented using [CuBLAS](https://developer.nvidia.com/cublas) via the strategy `batch_matmul` in
+`python/tvm/contrib/cublas.py`, which is made available to the operator's `OpStrategy` using
+`batch_matmul_stategy_cuda` in `python/tvm/relay/op/strategy/cuda.py` when `cublas` appears in the `Target`s `libs`
+attribute. That strategy simply calls the `PackedFunc` registered as `tvm.contrib.cublas.batch_matmul` and implemented
+in `src/runtime/contrib/cublas/cublas.cc` as part of the TVM runtime.
+
+Collage as presented can work with either approach. For the pattern-based BYOC approach Collage doesn't need to know
+what's going on under the BYOC integration hood, it only needs to see a `Target` with the appropriate
+`compiler` attribute. For the `te.extern` approach Collage can choose a candidate TVM sub-graph, then rely on TVM tuning
+to redirect some operators to their library implementations should the `Target` have the appropritae `libs`
+attribute.
+
+However, better would be something which:
+
+- Supports the many-to-one mapping of the pattern-based approach since it is so common in library implementations.
+- Always allows calls to extern functions from within TVM-generated kernels.
+- Requires less boilerplate than the pattern-based approach, and less ceremony than the `te.extern` approach.
+
+Our strawman:
+
+- Allow calls to `"Composite"` Functions to be transliterated to extern calls in the normal TVM lowering flow, where
+  the `"Composite"` attribute gives us the 'external function label'.
+- The transliteration uses a global TVM registry of external function labels. Each entry describes how to generate a
+  library shim and how to emit a `tir.call_packed' to that shim.
+- The usual Collage fusion rules can be used to include labelled sub-graphs with the appropriate external function
+  labels as alternatives. Those sub-graphs are ultimately combined into candidate kernels. Collage will then naturally
+  search between candidates with different choices of native vs library implementations.
+
+## Sub-project: Robust BYOC integrations for targets of interest
+
+Overall any BYOC toolchain which could be supported by Collage needs to be brought to a high standard:
+
+- It should support the latest toolchain/library versions.
+- It should support as much of Relay (both operators and dtypes) as feasible. In particular, Collage will only find
+  interesting mixes when BYOC toolchains have overlapping operator and dtype support.
+- It should correctly report which operators/patterns are supported.
+- It should have good unit test coverage in CI.
+- Dependencies should be documented and installation scripted (hopefully this is an easy consequence of the above).
+- The translation scheme should give the BYOC toolchain the best chance to do well. In particular, if Collage reports
+  toolchain X 'is better' than toolchain Y for a candidate sub-graph we want to have confidence that's not just because
+  toolchain Y has been hobbled by a poor translation, API misuse, or other 'holding it wrong' issue.
+- Where feasible, partitioning for the BYOC toolchain (not using Collage) should not be worse than using the toolchain
+  directly.
+
+Our current focus is on TensorRT, CUTLASS, CuDnn and CuBlas.
+
+## Highlights from the 'v1' prototype
+
+The 'v1' prototype has five main parts:
+
+- A
+  new [backend](https://github.com/mbs-octoml/mbs-tvm/blob/52d8780e879a9115b8a93e505bcd3a6c2646c61f/include/tvm/ir/expr.h#L208)
+  field on every Relay `Expr` to capture the pattern name and backend name chosen by Collage to force compilation to
+  match its choices.
+-
+An [intercept](https://github.com/mbs-octoml/mbs-tvm/blob/52d8780e879a9115b8a93e505bcd3a6c2646c61f/src/relay/transforms/fuse_ops.cc#L1392)
+in `fuse_ops.cc` which redirects to the main Collage fuser/searcher before TVM’s fusion rules kick in.
+- The main
+  fuser/searcher [implementation](https://github.com/mbs-octoml/mbs-tvm/blob/52d8780e879a9115b8a93e505bcd3a6c2646c61f/python/collage/optimizer/comp_graph_optimizer.py#L221)
+  (for the simpler DP algorithm). This implementation:
+    - Uses both Relay `Pattern` s and it’s own path-based fusion algorithm to find candidate sub-graphs.
+    - Uses the DP algorithm to find the best assignment of fused sub-graphs and targets to cover the whole Relay graph.
+    - Applies the assignment to the IRModule using the new `backend` field
+
+  The evolutionary search algorithm runs after the above and attempts to replace ‘op’ kernels (use a library) with
+  ‘graph’ kernels (if there’s a unique graph backend).
+- An
+  intercept ([here](https://github.com/mbs-octoml/mbs-tvm/blob/52d8780e879a9115b8a93e505bcd3a6c2646c61f/src/relay/transforms/fuse_ops.cc#L1402)
+  and
+  [here](https://github.com/mbs-octoml/mbs-tvm/blob/52d8780e879a9115b8a93e505bcd3a6c2646c61f/python/collage/optimizer/_optimizer.py#L48))
+  in `fuse_ops.cc` to actually effect the fusion for BYOC backends depending on the new `backend` field
+- An
+  intercept ([here](https://github.com/mbs-octoml/mbs-tvm/blob/52d8780e879a9115b8a93e505bcd3a6c2646c61f/src/relay/backend/te_compiler_cache.cc#L284)
+  and
+  [here](https://github.com/mbs-octoml/mbs-tvm/blob/52d8780e879a9115b8a93e505bcd3a6c2646c61f/python/collage/backend/collage_strategies.py#L18))
+  in `te_compiler.cc` to take over the selection of `OpStrategy` based on the `backend` field.
+
+Note that the 'v1' prototype only supports `IRModules` with a single `"main"` whose body is in the ‘pure dataflow’ Relay
+subset. Ie only calls, tuples, tuple projections, function variables and constants are supported.

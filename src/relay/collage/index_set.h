@@ -66,6 +66,7 @@ class IndexSet {
   size_t PopCount() const;
   bool IsZero() const;
   size_t FirstInsideIndex() const;
+  size_t LastInsideIndex() const;
   size_t NextIndex(size_t index) const;
   size_t FirstOutsideIndex() const;
   bool operator==(const IndexSet& that) const;

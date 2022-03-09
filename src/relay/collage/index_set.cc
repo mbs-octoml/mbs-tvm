@@ -139,6 +139,16 @@ size_t IndexSet::FirstInsideIndex() const {
   return bitvec_.size();
 }
 
+size_t IndexSet::LastInsideIndex() const {
+  for (size_t i = bitvec_.size(); i > 0; i--) {
+    const size_t index = i - 1;
+    if (bitvec_[index]) {
+      return index;
+    }
+  }
+  return bitvec_.size();
+}
+
 size_t IndexSet::NextIndex(size_t index) const {
   ICHECK_LT(index, bitvec_.size());
   for (index++; index < bitvec_.size(); index++) {

@@ -779,6 +779,7 @@ SubGraph::SubGraph(const DataflowGraph& dataflow_graph, IndexSet inside, OpPatte
   auto node = runtime::make_object<SubGraphNode>();
   node->inside_ = std::move(inside);
   node->first_inside_index_ = node->inside_.FirstInsideIndex();
+  node->last_inside_index_ = node->inside_.LastInsideIndex();
   node->entry_ = IndexSet(node->inside_.end_index());
   node->exit_ = IndexSet(node->inside_.end_index());
   node->input_ = IndexSet(node->inside_.end_index());

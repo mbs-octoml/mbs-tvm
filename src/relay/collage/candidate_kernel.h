@@ -96,12 +96,6 @@ class CandidateKernelNode : public Object {
    */
   Cost EstimatedCost(CostEstimator* cost_estimator) const;
 
-  /*!
-   * \brief Returns \p expr rewritten to partition the candidate kernel's sub-graph into an
-   * inline "Primitive" function with the appropriate additional annotations.
-   */
-  Expr Partition(const DataflowGraph& dataflow_graph, const Expr& expr) const;
-
   std::string ToString() const;
 };
 
@@ -137,6 +131,13 @@ class CandidateKernel : public ObjectRef {
    */
   static CandidateKernel DisjointUnion(const DataflowGraph& dataflow_graph,
                                        std::vector<CandidateKernel> candidates);
+
+  /*!
+   * \brief Returns \p expr rewritten to partition according to all the \p candidates
+   * (which must be disjoint).
+   */
+  static Expr ParallelPartition(std::unique_ptr<DataflowGraph> dataflow_graph, Expr expr,
+                                std::vector<CandidateKernel> candidates);
 
   TVM_DEFINE_OBJECT_REF_METHODS(CandidateKernel, ObjectRef, CandidateKernelNode);
 };
