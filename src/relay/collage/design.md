@@ -1,4 +1,4 @@
-# Design Doc: Collage
+# Design Doc: Collage [Draft 0.7]
 
 This design doc and accompanying
 ['v2' prototype implementation](https://github.com/mbs-octoml/mbs-tvm/tree/mbs-collage-sketch)
@@ -124,6 +124,55 @@ The `CollageFuseOps` pass proceeds in four phases:
 In the following we introduce the new datatypes, then expand on the phases.
 
 ## Design Details
+
+### Example Result
+
+To help with terminology, here's an example of
+[MNIST](https://github.com/onnx/models/tree/main/vision/classification/mnist) post-`CollageFuseOps` output:
+```
+fn (%x: Tensor[(1, 1, 28, 28), float32]) -> Tensor[(1, 10), float32] {
+  %4 = fn (%FunctionVar_08: Tensor[(1, 1, 28, 28), float32], Primitive=1) -> Tensor[(1, 1, 32, 32), float32] {
+    nn.pad(%FunctionVar_08, 0f, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]])
+  };
+  %5 = %4(%x);
+  %6 = fn (%FunctionVar_07: Tensor[(1, 1, 32, 32), float32], Primitive=1, Compiler="tensorrt", global_symbol="collage_nn_conv2d") -> Tensor[(1, 8, 28, 28), float32] {
+    nn.conv2d(%FunctionVar_07, meta[relay.Constant][2], padding=[0, 0, 0, 0], channels=8, kernel_size=[5, 5])
+  };
+  %7 = %6(%5);
+  %8 = fn (%FunctionVar_06: Tensor[(1, 8, 28, 28), float32] /* ty=Tensor[(1, 8, 28, 28), float32] */, %FunctionVar_12: Tensor[(8, 1, 1), float32] /* ty=Tensor[(8, 1, 1), float32] */, Primitive=1) -> Tensor[(1, 8, 28, 28), float32] {
+    %3 = add(%FunctionVar_06, %FunctionVar_12) /* ty=Tensor[(1, 8, 28, 28), float32] span=index:13:14 */;
+    nn.relu(%3) /* ty=Tensor[(1, 8, 28, 28), float32] span=index:14:15 */
+  } /* ty=fn (Tensor[(1, 8, 28, 28), float32], Tensor[(8, 1, 1), float32]) -> Tensor[(1, 8, 28, 28), float32] */;
+  %9 = %8(%7, meta[relay.Constant][3] /* ty=Tensor[(8, 1, 1), float32] span=index:12:13 */);
+  %10 = fn (%FunctionVar_05: Tensor[(1, 8, 28, 28), float32] /* ty=Tensor[(1, 8, 28, 28), float32] */, Primitive=1) -> Tensor[(1, 8, 14, 14), float32] {
+    nn.max_pool2d(%FunctionVar_05, pool_size=[2, 2], strides=[2, 2], padding=[0, 0, 0, 0]) /* ty=Tensor[(1, 8, 14, 14), float32] span=index:15:17 */
+  } /* ty=fn (Tensor[(1, 8, 28, 28), float32]) -> Tensor[(1, 8, 14, 14), float32] */;
+  %11 = %10(%9);
+  %12 = fn (%FunctionVar_04: Tensor[(1, 8, 14, 14), float32] /* ty=Tensor[(1, 8, 14, 14), float32] */, Primitive=1) -> Tensor[(1, 8, 18, 18), float32] {
+    nn.pad(%FunctionVar_04, 0f /* ty=float32 span=index:16:17 */, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]]) /* ty=Tensor[(1, 8, 18, 18), float32] span=index:17:19 */
+  } /* ty=fn (Tensor[(1, 8, 14, 14), float32]) -> Tensor[(1, 8, 18, 18), float32] */;
+  %13 = %12(%11);
+  %14 = fn (%FunctionVar_03: Tensor[(1, 8, 18, 18), float32] /* ty=Tensor[(1, 8, 18, 18), float32] */, %FunctionVar_11: Tensor[(16, 1, 1), float32] /* ty=Tensor[(16, 1, 1), float32] */, Primitive=1, Compiler="tensorrt", global_symbol="collage_nn_conv2d_add_nn_relu_1") -> Tensor[(1, 16, 14, 14), float32] {
+    %1 = nn.conv2d(%FunctionVar_03, meta[relay.Constant][1] /* ty=Tensor[(16, 8, 5, 5), float32] span=index:18:19 */, padding=[0, 0, 0, 0], channels=16, kernel_size=[5, 5]) /* ty=Tensor[(1, 16, 14, 14), float32] span=index:19:21 */;
+    %2 = add(%1, %FunctionVar_11) /* ty=Tensor[(1, 16, 14, 14), float32] span=index:21:22 */;
+    nn.relu(%2) /* ty=Tensor[(1, 16, 14, 14), float32] span=index:22:23 */
+  } /* ty=fn (Tensor[(1, 8, 18, 18), float32], Tensor[(16, 1, 1), float32]) -> Tensor[(1, 16, 14, 14), float32] */;
+  %15 = %14(%13, meta[relay.Constant][4] /* ty=Tensor[(16, 1, 1), float32] span=index:20:21 */);
+  %16 = fn (%FunctionVar_02: Tensor[(1, 16, 14, 14), float32] /* ty=Tensor[(1, 16, 14, 14), float32] */, Primitive=1) -> Tensor[(1, 16, 4, 4), float32] {
+    nn.max_pool2d(%FunctionVar_02, pool_size=[3, 3], strides=[3, 3], padding=[0, 0, 0, 0]) /* ty=Tensor[(1, 16, 4, 4), float32] span=index:23:24 */
+  } /* ty=fn (Tensor[(1, 16, 14, 14), float32]) -> Tensor[(1, 16, 4, 4), float32] */;
+  %17 = %16(%15);
+  %18 = fn (%FunctionVar_01: Tensor[(1, 16, 4, 4), float32] /* ty=Tensor[(1, 16, 4, 4), float32] */, Primitive=1) -> Tensor[(1, 256), float32] {
+    reshape(%FunctionVar_01, newshape=[1, 256]) /* ty=Tensor[(1, 256), float32] span=index:24:26 */
+  } /* ty=fn (Tensor[(1, 16, 4, 4), float32]) -> Tensor[(1, 256), float32] */;
+  %19 = %18(%17);
+  %20 = fn (%FunctionVar_0: Tensor[(1, 256), float32] /* ty=Tensor[(1, 256), float32] */, %FunctionVar_1: Tensor[(1, 10), float32] /* ty=Tensor[(1, 10), float32] */, Primitive=1, Compiler="tensorrt", global_symbol="collage_nn_dense_add") -> Tensor[(1, 10), float32] {
+    %0 = nn.dense(%FunctionVar_0, meta[relay.Constant][0] /* ty=Tensor[(10, 256), float32] span=index:25:26 */, units=None, out_dtype="float32") /* ty=Tensor[(1, 10), float32] span=index:26:28 */;
+    add(%0, %FunctionVar_1) /* ty=Tensor[(1, 10), float32] span=index:28:29 */
+  } /* ty=fn (Tensor[(1, 256), float32], Tensor[(1, 10), float32]) -> Tensor[(1, 10), float32] */;
+  %20(%19, meta[relay.Constant][5] /* ty=Tensor[(1, 10), float32] span=index:27:28 */)
+}
+```
 
 ### Util Datatypes
 
