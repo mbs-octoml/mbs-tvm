@@ -123,56 +123,130 @@ The `CollageFuseOps` pass proceeds in four phases:
 
 In the following we introduce the new datatypes, then expand on the phases.
 
-## Design Details
+## Example
 
-### Example Result
-
-To help with terminology, here's an example of
-[MNIST](https://github.com/onnx/models/tree/main/vision/classification/mnist) post-`CollageFuseOps` output:
+We start with `mod` bound to [MNIST](https://github.com/onnx/models/tree/main/vision/classification/mnist):
 ```
 fn (%x: Tensor[(1, 1, 28, 28), float32]) -> Tensor[(1, 10), float32] {
-  %4 = fn (%FunctionVar_08: Tensor[(1, 1, 28, 28), float32], Primitive=1) -> Tensor[(1, 1, 32, 32), float32] {
-    nn.pad(%FunctionVar_08, 0f, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]])
-  };
-  %5 = %4(%x);
-  %6 = fn (%FunctionVar_07: Tensor[(1, 1, 32, 32), float32], Primitive=1, Compiler="tensorrt", global_symbol="collage_nn_conv2d") -> Tensor[(1, 8, 28, 28), float32] {
-    nn.conv2d(%FunctionVar_07, meta[relay.Constant][2], padding=[0, 0, 0, 0], channels=8, kernel_size=[5, 5])
-  };
-  %7 = %6(%5);
-  %8 = fn (%FunctionVar_06: Tensor[(1, 8, 28, 28), float32] /* ty=Tensor[(1, 8, 28, 28), float32] */, %FunctionVar_12: Tensor[(8, 1, 1), float32] /* ty=Tensor[(8, 1, 1), float32] */, Primitive=1) -> Tensor[(1, 8, 28, 28), float32] {
-    %3 = add(%FunctionVar_06, %FunctionVar_12) /* ty=Tensor[(1, 8, 28, 28), float32] span=index:13:14 */;
-    nn.relu(%3) /* ty=Tensor[(1, 8, 28, 28), float32] span=index:14:15 */
-  } /* ty=fn (Tensor[(1, 8, 28, 28), float32], Tensor[(8, 1, 1), float32]) -> Tensor[(1, 8, 28, 28), float32] */;
-  %9 = %8(%7, meta[relay.Constant][3] /* ty=Tensor[(8, 1, 1), float32] span=index:12:13 */);
-  %10 = fn (%FunctionVar_05: Tensor[(1, 8, 28, 28), float32] /* ty=Tensor[(1, 8, 28, 28), float32] */, Primitive=1) -> Tensor[(1, 8, 14, 14), float32] {
-    nn.max_pool2d(%FunctionVar_05, pool_size=[2, 2], strides=[2, 2], padding=[0, 0, 0, 0]) /* ty=Tensor[(1, 8, 14, 14), float32] span=index:15:17 */
-  } /* ty=fn (Tensor[(1, 8, 28, 28), float32]) -> Tensor[(1, 8, 14, 14), float32] */;
-  %11 = %10(%9);
-  %12 = fn (%FunctionVar_04: Tensor[(1, 8, 14, 14), float32] /* ty=Tensor[(1, 8, 14, 14), float32] */, Primitive=1) -> Tensor[(1, 8, 18, 18), float32] {
-    nn.pad(%FunctionVar_04, 0f /* ty=float32 span=index:16:17 */, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]]) /* ty=Tensor[(1, 8, 18, 18), float32] span=index:17:19 */
-  } /* ty=fn (Tensor[(1, 8, 14, 14), float32]) -> Tensor[(1, 8, 18, 18), float32] */;
-  %13 = %12(%11);
-  %14 = fn (%FunctionVar_03: Tensor[(1, 8, 18, 18), float32] /* ty=Tensor[(1, 8, 18, 18), float32] */, %FunctionVar_11: Tensor[(16, 1, 1), float32] /* ty=Tensor[(16, 1, 1), float32] */, Primitive=1, Compiler="tensorrt", global_symbol="collage_nn_conv2d_add_nn_relu_1") -> Tensor[(1, 16, 14, 14), float32] {
-    %1 = nn.conv2d(%FunctionVar_03, meta[relay.Constant][1] /* ty=Tensor[(16, 8, 5, 5), float32] span=index:18:19 */, padding=[0, 0, 0, 0], channels=16, kernel_size=[5, 5]) /* ty=Tensor[(1, 16, 14, 14), float32] span=index:19:21 */;
-    %2 = add(%1, %FunctionVar_11) /* ty=Tensor[(1, 16, 14, 14), float32] span=index:21:22 */;
-    nn.relu(%2) /* ty=Tensor[(1, 16, 14, 14), float32] span=index:22:23 */
-  } /* ty=fn (Tensor[(1, 8, 18, 18), float32], Tensor[(16, 1, 1), float32]) -> Tensor[(1, 16, 14, 14), float32] */;
-  %15 = %14(%13, meta[relay.Constant][4] /* ty=Tensor[(16, 1, 1), float32] span=index:20:21 */);
-  %16 = fn (%FunctionVar_02: Tensor[(1, 16, 14, 14), float32] /* ty=Tensor[(1, 16, 14, 14), float32] */, Primitive=1) -> Tensor[(1, 16, 4, 4), float32] {
-    nn.max_pool2d(%FunctionVar_02, pool_size=[3, 3], strides=[3, 3], padding=[0, 0, 0, 0]) /* ty=Tensor[(1, 16, 4, 4), float32] span=index:23:24 */
-  } /* ty=fn (Tensor[(1, 16, 14, 14), float32]) -> Tensor[(1, 16, 4, 4), float32] */;
-  %17 = %16(%15);
-  %18 = fn (%FunctionVar_01: Tensor[(1, 16, 4, 4), float32] /* ty=Tensor[(1, 16, 4, 4), float32] */, Primitive=1) -> Tensor[(1, 256), float32] {
-    reshape(%FunctionVar_01, newshape=[1, 256]) /* ty=Tensor[(1, 256), float32] span=index:24:26 */
-  } /* ty=fn (Tensor[(1, 16, 4, 4), float32]) -> Tensor[(1, 256), float32] */;
-  %19 = %18(%17);
-  %20 = fn (%FunctionVar_0: Tensor[(1, 256), float32] /* ty=Tensor[(1, 256), float32] */, %FunctionVar_1: Tensor[(1, 10), float32] /* ty=Tensor[(1, 10), float32] */, Primitive=1, Compiler="tensorrt", global_symbol="collage_nn_dense_add") -> Tensor[(1, 10), float32] {
-    %0 = nn.dense(%FunctionVar_0, meta[relay.Constant][0] /* ty=Tensor[(10, 256), float32] span=index:25:26 */, units=None, out_dtype="float32") /* ty=Tensor[(1, 10), float32] span=index:26:28 */;
-    add(%0, %FunctionVar_1) /* ty=Tensor[(1, 10), float32] span=index:28:29 */
-  } /* ty=fn (Tensor[(1, 256), float32], Tensor[(1, 10), float32]) -> Tensor[(1, 10), float32] */;
-  %20(%19, meta[relay.Constant][5] /* ty=Tensor[(1, 10), float32] span=index:27:28 */)
+  %0 = nn.pad(%x, 0f, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]]);
+  %1 = nn.conv2d(%0, meta[relay.Constant][0] /*Tensor[(8, 1, 5, 5), float32]*/,
+                 padding=[0, 0, 0, 0], channels=8, kernel_size=[5, 5]);
+  %2 = add(%1, meta[relay.Constant][1] /*Tensor[(8, 1, 1), float32]*/);
+  %3 = nn.relu(%2);
+  %4 = nn.max_pool2d(%3, pool_size=[2, 2], strides=[2, 2], padding=[0, 0, 0, 0]);
+  %5 = nn.pad(%4, 0f, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]]);
+  %6 = nn.conv2d(%5, meta[relay.Constant][2] /*Tensor[(16, 8, 5, 5), float32]*/,
+                 padding=[0, 0, 0, 0], channels=16, kernel_size=[5, 5]);
+  %7 = add(%6, meta[relay.Constant][3] /*Tensor[(16, 1, 1), float32]*/);
+  %8 = nn.relu(%7);
+  %9 = nn.max_pool2d(%8, pool_size=[3, 3], strides=[3, 3], padding=[0, 0, 0, 0]);
+  %10 = reshape(%9, newshape=[1, 256]);
+  %11 = nn.dense(%10, meta[relay.Constant][4] /*Tensor[(10, 256), float32]*/, units=None, out_dtype="float32");
+  add(%11, meta[relay.Constant][5] /*Tensor[(1, 10), float32]*/)
 }
 ```
+
+We can compile this with Collage enabled for a variety of NVIDIA toolchains/libraries as follows:
+```
+with tvm.transform.PassContext(config={"relay.fallback_device_type": 2, "relay.collage.enable_collage": True}):
+    host_target = tvm.target.Target("llvm")
+    generic_target = tvm.target.Target("cuda", host_target)
+    cutlass_target = tvm.target.Target("cuda -compiler=cutlass", host_target)
+    tensorrt_target = tvm.target.Target("cuda -compiler=tensorrt", host_target)
+    cudnn_target = tvm.target.Target("cuda -libs=cudnn", host_target)
+    cublas_target = tvm.target.Target("cuda -libs=cublas", host_target)
+    targets = [generic_target, cutlass_target, tensorrt_target, cudnn_target, cublas_target]
+    exe = tvm.relay.vm.compile(mod, target=targets)
+```
+(Note that `cudnn` and `cublas` are not yet supported in the 'v2' prototype.) 
+
+After the `CollageFuseOps` pass, the intermediate `"main"` global function could
+resemble the following (though we've modified this "optimal" placement by hand to illustrate
+all the varieties of kernels so don't take it as representative of actual performance):
+```
+fn (%x: Tensor[(1, 1, 28, 28), float32]) -> Tensor[(1, 10), float32] {
+  # Use TVM native
+  %3 = fn (%FunctionVar_08: Tensor[(1, 1, 28, 28), float32],
+           Primitive=1) -> Tensor[(1, 1, 32, 32), float32] {
+    nn.pad(%FunctionVar_08, 0f, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]])
+  };
+  %4 = %3(%x);
+  # Use TVM native, but indicate we wish to link to CuDNN
+  %6 = fn (%FunctionVar_07: Tensor[(1, 1, 32, 32), float32],
+           Primitive=1) -> Tensor[(1, 8, 28, 28), float32] {
+    %5 = fn (%FunctionVar_5: Tensor[(1, 1, 32, 32), float32],
+             Composite="cudnn.conv2d") -> Tensor[(1, 8, 28, 28), float32] {
+      nn.conv2d(%FunctionVar_5, meta[relay.Constant][0] /*Tensor[(8, 1, 5, 5), float32]*/,
+                padding=[0, 0, 0, 0], channels=8, kernel_size=[5, 5])
+    };
+    %5(%FunctionVar_07)  
+  };
+  %7 = %6(%4);
+  # Use TVM native, with fusion
+  %8 = fn (%FunctionVar_06: Tensor[(1, 8, 28, 28), float32],
+           %FunctionVar_12: Tensor[(8, 1, 1), float32],
+           Primitive=1) -> Tensor[(1, 8, 28, 28), float32] {
+    %3 = add(%FunctionVar_06, %FunctionVar_12);
+    nn.relu(%3)
+  };
+  %9 = %8(%7, meta[relay.Constant][1] /*Tensor[(8, 1, 1), float32]*/);
+  # Use TVM native
+  %10 = fn (%FunctionVar_05: Tensor[(1, 8, 28, 28), float32],
+            Primitive=1) -> Tensor[(1, 8, 14, 14), float32] {
+    nn.max_pool2d(%FunctionVar_05, pool_size=[2, 2], strides=[2, 2], padding=[0, 0, 0, 0])
+  };
+  %11 = %10(%9);
+  # Use TVM native
+  %12 = fn (%FunctionVar_04: Tensor[(1, 8, 14, 14), float32],
+            Primitive=1) -> Tensor[(1, 8, 18, 18), float32] {
+    nn.pad(%FunctionVar_04, 0f, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]])
+  };
+  %13 = %12(%11);
+  # Use TensorRT, with fusion
+  %14 = fn (%FunctionVar_03: Tensor[(1, 8, 18, 18), float32],
+            %FunctionVar_11: Tensor[(16, 1, 1), float32],
+            Primitive=1,
+            Compiler="tensorrt",
+            global_symbol="collage_nn_conv2d_add_nn_relu_1") -> Tensor[(1, 16, 14, 14), float32] {
+    %1 = nn.conv2d(%FunctionVar_03, meta[relay.Constant][2] /*Tensor[(16, 8, 5, 5), float32]*/,
+                   padding=[0, 0, 0, 0], channels=16, kernel_size=[5, 5]);
+    %2 = add(%1, %FunctionVar_11);
+    nn.relu(%2)
+  };
+  %15 = %14(%13, meta[relay.Constant][3] /*Tensor[(16, 1, 1), float32]*/);
+  # Use TVM native
+  %16 = fn (%FunctionVar_02: Tensor[(1, 16, 14, 14), float32],
+            Primitive=1) -> Tensor[(1, 16, 4, 4), float32] {
+    nn.max_pool2d(%FunctionVar_02, pool_size=[3, 3], strides=[3, 3], padding=[0, 0, 0, 0])
+  };
+  %17 = %16(%15);
+  # Use TVM native
+  %18 = fn (%FunctionVar_01: Tensor[(1, 16, 4, 4), float32],
+            Primitive=1) -> Tensor[(1, 256), float32] {
+    reshape(%FunctionVar_01, newshape=[1, 256])
+  };
+  %19 = %18(%17);
+  # Use CUTLASS, with fusion
+  %20 = fn (%FunctionVar_0: Tensor[(1, 256), float32],
+            %FunctionVar_1: Tensor[(10, 256), float32],
+            %FunctionVar_2: Tensor[(1, 10), float32],
+            Primitive=1,
+            Compiler="cutlass",
+            global_symbol="collage_cutlass_dense_bias_nn_dense_add") -> Tensor[(1, 10), float32] {
+    %1 = fn (%FunctionVar_01: Tensor[(1, 256), float32],
+             %FunctionVar_11: Tensor[(10, 256), float32],
+             %FunctionVar_21: Tensor[(1, 10), float32],
+             Composite="cutlass.dense_bias") -> Tensor[(1, 10), float32] {
+      %0 = nn.dense(%FunctionVar_01, %FunctionVar_11, units=None, out_dtype="float32");
+      add(%0, %FunctionVar_21)
+    };
+    %1(%FunctionVar_0, %FunctionVar_1, %FunctionVar_2)
+  };
+  %20(%19, meta[relay.Constant][4] /*Tensor[(10, 256), float32]*/, meta[relay.Constant][5] /*Tensor[(1, 10), float32]*/)
+}
+```
+
+## Design Details
 
 ### Util Datatypes
 
@@ -452,8 +526,8 @@ other Relay passes except `LowerTEPass`. Thus it's fine for `FuseOps` to be run 
       included in a candidate kernel. Thus a BYOC integration will need to be 'robustified' to become 'Collage
       compatible'.
 - **Higher tuning cost**: Obviously Collage needs to estimate the latency of many more candidate kernels, and each
-  candidate may itself trigger tuning during lowering. For TVM this can require `O(thousands)` of trials and take
-  `O(hours)`, so we'll be very dependent on cached tuning logs to amortize this cost between models for the same target.
+  candidate may itself trigger tuning during lowering. For TVM this can require O(thousands) of trials and take
+  O(hours), so we'll be very dependent on cached tuning logs to amortize this cost between models for the same target.
 - **Task extraction vs Tuning**: Traditionally TVM has had three phases: i) Task extraction (find the fused sub-graphs
   to tune), ii) Tuning (find a good schedule for those sub-graphs), and iii) Compilation (re-compile the model, now
   retrieving schedules for all the anticipated sub-graphs from the cache.) However the Collage 'v2' prototype collapses
@@ -468,7 +542,8 @@ other Relay passes except `LowerTEPass`. Thus it's fine for `FuseOps` to be run 
   representation, which seems like a very large change for TVM.
 - **Dependency management**: Currently BYOC integrations tend to assume they are the only non-TVM toolchain in use. So
   it's possible two toolchains introduce runtime dependencies which can't be satisfied. Collage has no notion of
-  dependencies or incompatibilities and may attemt to mix candidate kernels we can't support in prod.
+  dependencies or incompatibilities and may attemt to mix candidate kernels we can't support in prod. It's also
+  possible for two BYOC integrations to have incompatible runtimes.
 - **Additive kernel cost assumption**: Collage as per this design assumes the cost of running candidate kernels is
   additive, plus a small launch penalty. However cache effects can dominate measured latency, particularly for 'light'
   kernels. Thus there may be a **additive error** in the final result:
@@ -478,7 +553,7 @@ other Relay passes except `LowerTEPass`. Thus it's fine for `FuseOps` to be run 
   The evolutionary search explored by the Collage paper can help here since it uses measured end-to-end model latency as
   its cost function, but we're deferring that to future work.
 
-- **Limited search space**: Naively exploring all sub-graphs is `O(n!)`, so we need to constrain the search. The easiest
+- **Limited search space**: Naively exploring all sub-graphs is O(n!), so we need to constrain the search. The easiest
   approach is just to limit candidate kernels to sub-graphs of just a few operators. This can mean significatly faster
   candidates are not explored, yielding a placement with high **optimality loss**:
 

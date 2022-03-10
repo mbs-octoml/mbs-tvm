@@ -41,6 +41,7 @@
 #include "./name_supply.h"
 #include "./priority_queue.h"
 #include "./sub_graph.h"
+#include "utils.h"
 
 namespace tvm {
 namespace relay {
@@ -122,8 +123,7 @@ class CandidateKernelIndex {
         first_inside_index_to_candidates_(dataflow_graph->size()) {}
 
   /*! \brief Constructs the index. */
-  void Index(const Expr& expr, const std::vector<FusionSpec>& fusion_specs,
-             NameSupply* name_supply) {
+  void Index(const Expr& expr, const Array<FusionSpec>& fusion_specs, NameSupply* name_supply) {
     for (const auto& fusion_spec : fusion_specs) {
       VLOG_CONTEXT << "spec " << fusion_spec->spec_name_;
       Array<CandidateKernel> candidates =
@@ -170,7 +170,7 @@ class CandidateKernelIndex {
  */
 class Partitioner {
  public:
-  explicit Partitioner(const std::vector<FusionSpec>* fusion_specs) : fusion_specs_(fusion_specs) {}
+  explicit Partitioner(Array<FusionSpec> fusion_specs) : fusion_specs_(std::move(fusion_specs)) {}
 
   Expr Partition(Expr expr) {
     VLOG_CONTEXT << "Partitioning";
@@ -179,7 +179,7 @@ class Partitioner {
     // Index all the candidates (which will be owned by the index).
     CandidateKernelIndex index(dataflow_graph.get());
     NameSupply name_supply("collage");
-    index.Index(expr, *fusion_specs_, &name_supply);
+    index.Index(expr, fusion_specs_, &name_supply);
     VLOG(1) << "Indexed " << index.size() << " candidate kernels";
     VLOG(1) << "Commencing search";
     SearchState* init_state = GetState(IndexSet(dataflow_graph->size()));
@@ -205,8 +205,9 @@ class Partitioner {
                                                   std::move(best_candidates));
       }
       size_t num_fires = 0;
+      Expr sub_expr = dataflow_graph->index_to_node(next_index)->ref();
       VLOG(1) << "Looking at index " << next_index << " for sub-expression "
-              << SubExprKindAndLabel(dataflow_graph->index_to_node(next_index)->ref()).second;
+              << SubExprKindAndLabel(sub_expr).second;
       for (const auto& candidate_kernel : index.candidate_kernels_at(next_index)) {
         VLOG(1) << "Considering candidate kernel " << candidate_kernel->ToString();
         if (!candidate_kernel->sub_graph_->inside_.AreDisjoint(curr_state->covered_)) {
@@ -218,15 +219,21 @@ class Partitioner {
         Relax(curr_state, next_state, candidate_kernel);
         ++num_fires;
       }
-      if (num_fires == 0) {
-        VLOG(1) << "No candidates, skipping node";
+      if (MustBeLowered(sub_expr)) {
+        ICHECK_GT(num_fires, 0)
+            << "No candidate was found covering sub-expression at index " << next_index
+            << ", suggesting the fusion rules are incomplete for the given targets.";
+      } else {
+        // It is (also) possible to leave this sub-expression to be evaluated by the VM.
+        // However, we'll assume that evaluation cost is zero.
+        VLOG(1) << "Allowing possibility of current sub-expression being left behind";
         IndexSet next_covered =
             curr_state->covered_ | IndexSet(dataflow_graph->size(), {next_index});
         SearchState* next_state = GetState(next_covered);
         Relax(curr_state, next_state, /*candidate=*/{});
       }
     }
-    ICHECK(false) << "should have reached state in which all sub-expressions are covered";
+    ICHECK(false) << "should have reached end state in which all sub-expressions are covered";
     return {};
   }
 
@@ -282,7 +289,7 @@ class Partitioner {
 
  private:
   /*! \brief Available fusion specs to use during search. */
-  const std::vector<FusionSpec>* fusion_specs_;
+  Array<FusionSpec> fusion_specs_;
   /*! \brief Cost estimator to use for candidate kernels. */
   CostEstimator cost_estimator_;
   /*! \brief Map from covered sub-graphs to the corresponding state. */
@@ -296,8 +303,8 @@ class Partitioner {
  * \brief Returns all the fusion specifications gathered from all targets in the compilation
  * config.
  */
-std::vector<FusionSpec> GatherFusionSpecs(const CompilationConfig& config) {
-  std::vector<FusionSpec> result;
+Array<FusionSpec> GatherFusionSpecs(const CompilationConfig& config) {
+  Array<FusionSpec> result;
   for (const auto& target : config->primitive_targets) {
     // We implement this on the python side only so that we can get access to the BYOC
     // pattern registry. Otherwise for the most part this implementation just bounces right
@@ -307,7 +314,7 @@ std::vector<FusionSpec> GatherFusionSpecs(const CompilationConfig& config) {
     ICHECK(make_fusion_spec);
     FusionSpec spec = (*make_fusion_spec)(target);
     VLOG(1) << "using spec:\n" << spec->ToString();
-    result.emplace_back(std::move(spec));
+    result.push_back(spec);
   }
   // TODO(mbs): Note that if we have multiple 'TVM' targets (eg for different devices) we'll end
   // up finding the same candidates for each such. We should allow a FusionSpec to have multiple
@@ -319,35 +326,28 @@ std::vector<FusionSpec> GatherFusionSpecs(const CompilationConfig& config) {
 }  // namespace
 
 transform::Pass CollageFuseOps(const CompilationConfig& compilation_config) {
-  std::vector<FusionSpec> fusion_specs = GatherFusionSpecs(compilation_config);
-  VLOG(1) << "Gathered " << fusion_specs.size() << " fusion specs";
-
-  auto pass_func = [fusion_specs = std::move(fusion_specs)](Function function, IRModule mod,
-                                                            transform::PassContext ctxt) {
+  auto pass_func = [=](IRModule mod, transform::PassContext ctxt) {
     Optional<Bool> opt_enable = ctxt->GetConfig<Bool>("relay.collage.enable_collage", Bool(false));
     if (!opt_enable.value()) {
       VLOG(1) << "ignoring since collage is disabled";
-      return function;
+      return mod;
     }
-    // Though nothing goes wrong it's deeply confusing when we attempt to partition when
-    // invoking the compiler to estimate the cost of a candidate kernel. So skip partitioning
-    // entirely if the body of the function is a call to a "Primitive" function.
-    const auto* call_node = function->body.as<CallNode>();
-    if (call_node) {
-      const auto* call_function_node = call_node->op.as<FunctionNode>();
-      if (call_function_node) {
-        if (call_function_node->HasNonzeroAttr(attr::kPrimitive)) {
-          return function;
-        }
+    Array<FusionSpec> fusion_specs = GatherFusionSpecs(compilation_config);
+    VLOG(1) << "Gathered " << fusion_specs.size() << " fusion specs";
+    IRModule out_mod = mod->ShallowCopy();
+    for (const auto& kv : mod->functions) {
+      if (const auto* function_node = AsOptimizableFunctionNode(kv.second)) {
+        auto function = GetRef<Function>(function_node);
+        VLOG(1) << "Partitioning " << kv.first->name_hint << " from:\n" << PrettyPrint(function);
+        collage::Partitioner partitioner(fusion_specs);
+        Function result = Downcast<Function>(partitioner.Partition(function));
+        VLOG(1) << "Partitioned " << kv.first->name_hint << " to:\n" << PrettyPrint(result);
+        out_mod->Add(kv.first, result);
       }
     }
-    VLOG(1) << "Partitioning from:\n" << PrettyPrint(function);
-    collage::Partitioner partitioner(&fusion_specs);
-    Function result = Downcast<Function>(partitioner.Partition(function));
-    VLOG(1) << "Partitioned to:\n" << PrettyPrint(result);
-    return result;
+    return out_mod;
   };
-  return transform::CreateFunctionPass(pass_func, /*opt_level=*/0, "CollageFuseOps", {});
+  return tvm::transform::CreateModulePass(pass_func, /*opt_level=*/0, "CollageFuseOps", {});
 }
 
 }  // namespace collage
