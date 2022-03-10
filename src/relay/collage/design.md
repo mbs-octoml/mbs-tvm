@@ -31,7 +31,8 @@ the `MergeComposite`/`AnnotateTarget`/`MergeCompilerRegions`/`PartitionGraph` pa
 (provided for every Relay operator and used by `FuseOps`), BYOC `"target.<toolchain>"`
 operator predicates (provided for some operator/toolchain pairs by 'operator-based' BYOC integrations) and BYOC operator
 pattern/predicates (registered in the pattern table by 'pattern-based' BYOC integrations). In this way only the more
-boilerplate aspects of existing BYOC integrations need to be adjusted to support Collage.
+boilerplate aspects of existing BYOC integrations need to be adjusted to support Collage. The
+`partition_for_<toolchain>` operations are retained for users who wish to retain manual control.
 
 > NOTE: We'd like to coordinate these changes with the UMA project. Our aim in this design is to make the smallest
 > changes to BYOC as possible. We think the changes described here can be easily reworked to follow any BYOC API
@@ -46,39 +47,16 @@ Collage offers four advantages:
   rules/algorithms and implementing partitioning can be replaced with one, which itself is built from compositional
   primitives.
 - **Decoupling**: It is ok for a candidate kernel found during search to actually not be valid for a toolchain (even
-  TVMs). Such candidates can simply be given 'infinite' cost and thus ignored. This can help reduce the tight coupling
-  between backends and fusion rules.
-
-The results of the preprint were derived in a [branch](https://github.com/cmu-catalyst/collage) from
-[TVM](https://github.com/apache/tvm) at `461d06eb5cfc7954f1983779acd05c47cea269f1`. We have since rebased that code onto
-main, and refer to it as the
-['v1' prototype implementation](https://github.com/mbs-octoml/mbs-tvm/tree/mbs-collage-port). In comparison to the
-'v1' prototype, this design:
-
-- Avoids the need to add any new 'Collage specific' fusion patterns and predicates. We want to make sure Collage can
-  work even for out-of-tree BYOC toolchains (modulo some of the BYOC API changes we discuss below).
-- Builds on the existing support for heterogeneous `Target`s to represent the menu of available toolchains to use during
-  search. In particular, we want to allow users to blend `on_device` annotations (to express preferences for which
-  devices should execute which sub-graphs) with Collage (to find the best kernels and toolchains respecting those device
-  preferences).
-- Uses the existing convention for `"Primitive"`, `"Composite"` and `"Compiler"` attributes on Relay `Function`s to
-  express the assignment of sub-graph to toolchain.
-- Implements support for 3rd party libraries (eg cudnn) so as to allow an N-to-1 mapping from Relay operators to library
-  call (this is not yet implemented in the 'v2' prototype, see below for the sketch).
-- Is implemented mostly in C++.
-
-However:
-
-- The 'v2' prototype only implements the 'op-level' dynamic-programming based search strategy from the paper. Though the
-  paper reports encouraging results with the 'graph-level' evolutionary-search strategy we leave that to future work.
+  TVM's). Such candidates could be given 'infinite' cost and thus ignored during search. In this way we can avoid tight
+  coupling between backends and fusion rules.
 
 ## Success Metrics
 
-1. Collage offers at least a 10% latency improvement for a selection of standard ONNX models and NVIDIA targets using
-   targets which include the CuDNN and CuBlas libraries, the CUTLASS libraries (with tuning, via BYOC), the TensorRT
-   compiler (via BYOC), and obviously TVM native.
-2. Collage does not require per-target or per-model patterns or rules to be implemented beyond those appropriate for the
-   BYOC integrations alone.
+1. Collage offers at least a 10% latency improvement for a selection of standard ONNX models and NVIDIA hardware using
+   targets which include the CuDNN and CuBlas libraries, the CUTLASS library (with tuning, via BYOC), the TensorRT
+   compiler (via BYOC), and (obviously!) TVM native.
+2. Collage does not require new per-target or per-model patterns or rules to be implemented independently of the BYOC
+   integrations.
 3. Collage with a single BYOC enabled is never worse than simply partitioning for the BYOC as per TVM today.
 
 ## Project Milestones
@@ -90,42 +68,10 @@ However:
 - [2022Q1] M4: Re-validate results on 'v2' prototype for larger models (eg GPT2) and more NVIDIA targets.
 - [2022Q2] M5: Implementation in TVM main, including 'sub-projects' listed below.
 
-## Design Overview
-
-The implementation is mostly under `src/relay/collage/...` (namespace `tvm::relay::collage`), with some helper Python
-under `python/tvm/relay/collage`.
-
-If the `relay.collage.enable_collage` `PassConfig` attribute is true then the standard `FuseOps` pass is replaced by a
-new `CollageFuseOps` pass. The new pass effects the same invariant on the output as the old:
-
-> All Relay sub-graphs in all global functions which are to be lowered to a kernel are replaced by calls to an inline
-> `"Primitive"` `Function`. Functions which are to be lowered by a BYOC-provided toolchain are also annotated with
-> `"Compiler"` and `"global_symbol"` attributes.
-
-The `CollageFuseOps` pass proceeds in four phases:
-
-- **Phase 1**: The available `Target`s are scanned to build a list of `FusionSpec`s. Each `FusionSpec` is built from
-  (a tree of) `FusionRule`s. How the rules are constructed depends on `Target` itself. The remaining phases execute on
-  each global function separately.
-- **Phase 2**: A `DataflowGraph` is constructed for the global function. The available `FusionRule`s are evaluated on
-  the dataflow graph to yield a (possibly overlapping) set of `CandidateKernels` for each target. Each candidate is
-  described by a `SubGraph` which efficiently denotes a sub-graph of the global function's body without the need to
-  construct any new expressions. The candidates are placed in a `CandidateKernelIndex` for use below.
-- **Phase 3**: A shortest path is found in the following (implicit) search graph:
-    - Search Nodes: An `IndexSet` describing which dataflow nodes are been assigned to a candidate kernel.
-    - Search Edge X->Y: A `CandidteKernel` can be applied to node X to give node Y. The candidate is disjoint from all
-      dataflow nodes already accounted for in X. To avoid an unnecessary search space explosion the candidate must also
-      include the next yet-to-be-assigned dataflow node in X.
-    - Edge cost: Estimated latency of the candidate kernel, plus a kernel launch penalty. Note that though we need to be
-      able to extract the candidate's sub-graph in order to build the kernel, we do not need to partition the overall
-      function body expression.
-- **Phase 4**: The function body is partitioned according to the candidate kernels on the shortest path.
-
-In the following we introduce the new datatypes, then expand on the phases.
-
 ## Example
 
 We start with `mod` bound to [MNIST](https://github.com/onnx/models/tree/main/vision/classification/mnist):
+
 ```
 fn (%x: Tensor[(1, 1, 28, 28), float32]) -> Tensor[(1, 10), float32] {
   %0 = nn.pad(%x, 0f, pad_width=[[0, 0], [0, 0], [2, 2], [2, 2]]);
@@ -147,6 +93,7 @@ fn (%x: Tensor[(1, 1, 28, 28), float32]) -> Tensor[(1, 10), float32] {
 ```
 
 We can compile this with Collage enabled for a variety of NVIDIA toolchains/libraries as follows:
+
 ```
 with tvm.transform.PassContext(config={"relay.fallback_device_type": 2, "relay.collage.enable_collage": True}):
     host_target = tvm.target.Target("llvm")
@@ -158,11 +105,13 @@ with tvm.transform.PassContext(config={"relay.fallback_device_type": 2, "relay.c
     targets = [generic_target, cutlass_target, tensorrt_target, cudnn_target, cublas_target]
     exe = tvm.relay.vm.compile(mod, target=targets)
 ```
-(Note that `cudnn` and `cublas` are not yet supported in the 'v2' prototype.) 
 
-After the `CollageFuseOps` pass, the intermediate `"main"` global function could
-resemble the following (though we've modified this "optimal" placement by hand to illustrate
-all the varieties of kernels so don't take it as representative of actual performance):
+(Note that `cudnn` and `cublas` are not yet supported in the 'v2' prototype.)
+
+After the `CollageFuseOps` pass, the intermediate `"main"` global function could resemble the following (though we've
+modified this "optimal" placement by hand to illustrate all the varieties of kernels so don't take it as representative
+of actual performance):
+
 ```
 fn (%x: Tensor[(1, 1, 28, 28), float32]) -> Tensor[(1, 10), float32] {
   # Use TVM native
@@ -246,16 +195,46 @@ fn (%x: Tensor[(1, 1, 28, 28), float32]) -> Tensor[(1, 10), float32] {
 }
 ```
 
-## Design Details
+## Design
+
+The implementation is mostly under `src/relay/collage/...` (namespace `tvm::relay::collage`), with some helper Python
+under `python/tvm/relay/collage`.
+
+If the `relay.collage.enable_collage` `PassConfig` attribute is true then a new `CollageFuseOps` pass is inserted before
+the existing `FuseOps` pass. The new pass effects the invariant:
+
+> All Relay sub-graphs in all global functions which are to be lowered to a kernel are replaced by calls to an inline
+> `"Primitive"` `Function`. Functions which are to be lowered by a BYOC-provided toolchain are given
+> `"Compiler"` and `"global_symbol"` attributes. The bodies of those function may contain calls to inlined
+> `"Composite"` annotated functions to further direct lowering within the kernel.
+
+The `CollageFuseOps` pass proceeds in four phases:
+
+- **Phase 1**: The available `Target`s are scanned to build a list of `FusionSpec`s. Each `FusionSpec` is built from
+  (a tree of) `FusionRule`s. How the rules are constructed depends on `Target` itself. The remaining phases execute on
+  each global function separately.
+- **Phase 2**: A `DataflowGraph` is constructed for the global function. The available `FusionRule`s are evaluated on
+  the dataflow graph to yield a (possibly overlapping) set of `CandidateKernels` for each target. Each candidate is
+  described by a `SubGraph` which efficiently denotes a sub-graph of the global function's body without the need to
+  construct any new expressions. The candidates are placed in a `CandidateKernelIndex` for use below.
+- **Phase 3**: A shortest path is found in the following (implicit) search graph:
+    - Search Nodes: An `IndexSet` describing which dataflow nodes are been assigned to a candidate kernel so far.
+    - Search Edge X->Y: A `CandidteKernel` can be applied to node X to give node Y. The candidate is disjoint from all
+      dataflow nodes already assigned in X. To avoid an unnecessary search space explosion the candidate must also
+      include the next yet-to-be-assigned dataflow node in X.
+    - Edge cost: Estimated latency of the candidate kernel, plus a kernel launch penalty. Note that though we need to be
+      able to extract the candidate's sub-graph in order to build the kernel, we do not yet need to partition the
+      overall function body expression.
+- **Phase 4**: The function body is partitioned according to the candidate kernels on the shortest path.
+
+In the following we introduce the new datatypes, then expand on the phases.
 
 ### Util Datatypes
-
-Before diving into the phases we describe some new datatypes:
 
 - `PostDfsIndex`: The integer index of a Relay sub-expression in a post-dfs traversal of the overall Relay expression.
   If index i is less than index j then we know the sub-expression for j cannot influence the value of the sub-expression
   for i.
-- `DataflowGraph`: This is ust the existing `IndexedGraph<Expr>` from the `DFPatternMatcher` suite (which in turn is a
+- `DataflowGraph`: As alias for the existing `IndexedGraph<Expr>` from the `DFPatternMatcher` suite (which in turn is a
   reworked copy of the `IndexedGraph` private to `fuse_ops.cc`). It is used throughout to manage the three-way bijection
   from Relay `ExprNode`s to `PostDfsIndex`s to
   `DataflowGraph::Node`s. Each `DataflowGraph::Node` describes the sub-expression's dataflow inputs, outputs, dominator
@@ -263,7 +242,7 @@ Before diving into the phases we describe some new datatypes:
 - `IndexSet`:  A bit vector indexed by `PostDfsIndex`s. These are used as a compact representation for an arbitrary set
   of dataflow nodes in a dataflow graph.
 - `Cost`: A `double` representing a candidate kernel's 'cost', which currently is just mean execution latency in
-  seconds. The Collage system only cares that costs are additive and a total order so we could support, eg, cost
+  seconds. Collage only cares that costs are additive and a total order, so in the future we could support cost
   functions which balance execution time against high memory watermark or other measures. Costs may be `Unknown`
   (ie NaN) to signal some other heuristic should be used to compare kernel costs. Costs may be `Invalid` (ie +inf)
   to signal the toolchain could not compile and run a candidate kernel.
@@ -353,9 +332,9 @@ The base rules implemented so far:
   this will result in a singleton sub-graph containing only the call, but it may pull in constant arguments to the call
   should they be required. This is the foundation for operator-based BYOC integrations, though we should consider
   retiring this mechanism in favor of pattern-based alone.
-- `SingletonByKindFusionRule`: Uses the `"TOpPattern"` attribute provided for every Relay operator to produce a
-  candidate for every call to a 'fusable Relay operator'. This can be used as the foundation for generic fusion patterns
-  which work over all Relay operators with particular properties (elementwise, broadcast, injective, reductive, anchor).
+- `OpCallByKindFusionRule`: Uses the `"TOpPattern"` attribute provided for every Relay operator to produce a candidate
+  for every call to a 'fusable Relay operator'. This can be used as the foundation for generic fusion patterns which
+  work over all Relay operators with particular properties (elementwise, broadcast, injective, reductive, anchor).
 
 The combinator rules implemented so far:
 
@@ -365,25 +344,22 @@ The combinator rules implemented so far:
   rewritten to specific target-specific operators. This combinator wraps the `DFPatternFusionRules` for the
   pattern-based BYOC integrations. However it could also be used with the default TVM backend, eg to indicate Relay
   operators should be replaced with particular external library implementations.
-- `UnionFusionRule`: Simply unions all the candidates from all sub-rules together. This is how a set of,
-  say, `DFPatternFusionRules` can be combined.
-- `CombineByKindFusionRule`: Given a sub-rule and a list of 'primitive' rules, finds all possible ways of combining the
-  sub-rules candidates to yield even larger candidates. Note that the sub-rule's candidates are included in the results
-  -- that is every combination of candidates is considered optional. The 'primitive' rules allow combining by
-  `OpPatternKinds`, as combining the arguments to tuples which themselves are arguments to Relay operator calls. This
+- `CombineByPrimitivesFusionRule`: Given a sub-rule and a list of 'primitive' rules, finds all possible ways of
+  combining the sub-rule candidates to yield even larger candidates. Note that the sub-rule's candidates may also be
+  included in the results -- that is every combination of candidates is considered optional. The 'primitive' rules allow
+  combining by
+  `OpPatternKinds`, and combining the arguments to tuples which themselves are arguments to Relay operator calls. This
   rule is intended to mimic the existing TVM `FuseOps` pass, though: i) all combinations are found, ii) the starting set
-  of candidates can be provided by any other rule (ie not just `SingletonByKindFusionRule`), and iii) we rely
-  on `SubGraph`
-  validity checking to weed out infeasible candidates. Obviously we must pay very close attention to the O(n!) growth
-  and efficiency of this rule -- the 'v2' prototype has just done the most naive thing to get us going.
+  of candidates can be provided by any other rule (ie not just `OpCallByKindFusionRule`), and iii) we rely on `SubGraph`
+  validity checking to weed out infeasible candidates.
 
 Though not yet implemented, we'd like to allow a combinator rule which will union candidate based on their 'anchor'
 operators. This can be used to implement 'vertical' and 'horizontal' fusion on more primitive candidates. Note that the
 `SubGraph` machinery supports multiple-input and -output sub-graphs and their validation, so horizontal fusion is easy
 implement.
 
-We also have `CoalesceFusionRule`, which eagerly combines 'touching' candidates (ie candidates where the output of one
-sub-graph can be directly connected to the input of the other sub-graph)
+We also have `MaxCoalesceFusionRule`, which eagerly combines 'touching' candidates (ie candidates where the output of
+one sub-graph can be directly connected to the input of the other sub-graph)
 to form the largest possible candidate. The idea is once the search has been completed this rule can be used to collapse
 adjacent kernels intended for the same target.
 
@@ -393,10 +369,10 @@ I didn't have time to build it to scale or paint it):
 - Classic TVM `FuseOps`:
 
 ```
-      SingletonByKindFusionRule
+      OpCallByKindFusionRule
                 |
                 v
-       CombineByKindFusionRule (standard prims)
+    CombineByPrimitivesFusionRule (with default TVM primitive rules)
 ```
 
 - Classic operator-based BYOC with `AnnotateTarget`/`MergeCompilerRegions`/`PartitionGraph` passes:
@@ -405,48 +381,47 @@ I didn't have time to build it to scale or paint it):
       OpPredicateFusionRule
                 |
                 v
-      CombineByKindFusionRule (join anything touching)
+   CombineByPrimitivesFusionRule (with join anything primitive rule)
 ```
 
 - Classic pattern-based BYOC with `MergeComposite`/`AnnotateTarget`/`PartitionGraph` passes:
 
 ```
-     DFPatternFusionRule(pattern1)          ...     DFPatternFusionRule(patternn)
-                |                                               |
-                v                                               v
-      CompositeFusionRule(label1)           ...      CompositeFusionRule(labeln)
-                    \                                      /
-                     \                                    /
-                      v                                  v
-                                UnionFusionRule
-                                      |
-                                      v
-                            CombineByKindFusionRule (join anything touching)
+     DFPatternFusionRule(pattern1)  ...  DFPatternFusionRule(patternn)
+                |                                    |
+                v                                    v
+      CompositeFusionRule(label1)   ...   CompositeFusionRule(labeln)
+                        \                     /
+                         v                   v
+                            UnionFusionRule
+                                   |
+                                   v
+                     CombineByPrimitivesFusionRule (with join anything primitive rule)
 ```
 
 - "Just fuse what I tell you to fuse", using `DFPatterns` to directly select candidates:
 
 ```
-     DFPatternFusionRule(pattern1)          ...     DFPatternFusionRule(patternn)
-                |                                               |
-                v                                               v
-                                UnionFusionRule
+     DFPatternFusionRule(pattern1)  ...  DFPatternFusionRule(patternn)
+                           \                 /
+                            v               v
+                             UnionFusionRule
 ```
 
 - "Consider this library implementation for these sub-expressions", using `DFPatterns` to pick out which Relay operators
   are supported (note that TVM lowering does not currently support this):
 
 ```
-    SingletonByKindFusionRule   DFPatternFusionRule(pattern1) ... DFPatternFusionRule(patternn)
-               \                            |                                 |
-                \                           v                                 v
-                 \               CompositeFusionRule(label1)  ...  CompositeFusionRule(labeln)
-                  \                         |                                 |
-                   v                        v                                 v
+    OpCallByKindFusionRule     DFPatternFusionRule(pattern1) ... DFPatternFusionRule(patternn)
+                    \                       |                                 |
+                     \                      v                                 v
+                      \         CompositeFusionRule(label1)  ...  CompositeFusionRule(labeln)
+                       \                    |                        /
+                        v                   v                       v
                                       UnionFusionRule
                                             |
                                             v
-                                  CombineByKindFusionRule (standard prims)
+                             CombineByPrimitivesFusionRule (with default TVM primitive rules)
 ```
 
 ### FusionSpec
@@ -490,19 +465,24 @@ for rapid retrieval during the shortest path search.
 ### Phase 3
 
 We find it most natural to use Dijkstra to find the optimal placement. A `SearchState` is:
-- An `IndexSet` of the dataflow nodes already 'covered' by candidates on the best path to this state. This is
-  the identifying key for the state.
+
+- An `IndexSet` of the dataflow nodes already 'covered' by candidates on the best path to this state. This is the
+  identifying key for the state.
 - The predecessor `SearchState` in the best path to this state.
 - The `Cost` of the best path to this state. This is the order for the Dijkstra priority queue.
 - The `CandidateKernel` for the transition from the best predecessor to this state.
 
 The starting state has no covered nodes. The final state has all nodes covered.
 
-When expanding a state we could choose any `CandidateKernel` collected from phase 2 provided it doesn't overlap
-with the state's covered set. However, a search path applying candidates C then D is equivalent to one
-applying D then C, so we only consider candidates which intersect the next yet-to-be-covered dataflow node.
-For each such candidate we use the `CostEstimator` (with it's assumed cache) to get the candidate's cost,
-build the successor state, and 'relax' the successor state in the usual way.
+When expanding a state we could choose any `CandidateKernel` collected from phase 2 provided it doesn't overlap with the
+state's covered set. However, a search path applying candidates C then D is equivalent to one applying D then C, so we
+only consider candidates which intersect the next yet-to-be-covered dataflow node. For each such candidate we use
+the `CostEstimator` (with it's assumed cache) to get the candidate's cost, build the successor state, and 'relax' the
+successor state in the usual way.
+
+Not all Relay expression nodes need to be assigned to a kernel since the VM or other execution provider can happily
+evaluate most Relay expressions except for calls to primitive operators. Thus the search must allow for the possibility
+of a expression node being 'left behind'.
 
 ### Phase 4
 
@@ -526,8 +506,8 @@ other Relay passes except `LowerTEPass`. Thus it's fine for `FuseOps` to be run 
       included in a candidate kernel. Thus a BYOC integration will need to be 'robustified' to become 'Collage
       compatible'.
 - **Higher tuning cost**: Obviously Collage needs to estimate the latency of many more candidate kernels, and each
-  candidate may itself trigger tuning during lowering. For TVM this can require O(thousands) of trials and take
-  O(hours), so we'll be very dependent on cached tuning logs to amortize this cost between models for the same target.
+  candidate may itself trigger tuning during lowering. For TVM this can require O(thousands) of trials and take O(hours)
+  , so we'll be very dependent on cached tuning logs to amortize this cost between models for the same target.
 - **Task extraction vs Tuning**: Traditionally TVM has had three phases: i) Task extraction (find the fused sub-graphs
   to tune), ii) Tuning (find a good schedule for those sub-graphs), and iii) Compilation (re-compile the model, now
   retrieving schedules for all the anticipated sub-graphs from the cache.) However the Collage 'v2' prototype collapses
@@ -542,8 +522,8 @@ other Relay passes except `LowerTEPass`. Thus it's fine for `FuseOps` to be run 
   representation, which seems like a very large change for TVM.
 - **Dependency management**: Currently BYOC integrations tend to assume they are the only non-TVM toolchain in use. So
   it's possible two toolchains introduce runtime dependencies which can't be satisfied. Collage has no notion of
-  dependencies or incompatibilities and may attemt to mix candidate kernels we can't support in prod. It's also
-  possible for two BYOC integrations to have incompatible runtimes.
+  dependencies or incompatibilities and may attemt to mix candidate kernels we can't support in prod. It's also possible
+  for two BYOC integrations to have incompatible runtimes.
 - **Additive kernel cost assumption**: Collage as per this design assumes the cost of running candidate kernels is
   additive, plus a small launch penalty. However cache effects can dominate measured latency, particularly for 'light'
   kernels. Thus there may be a **additive error** in the final result:
@@ -695,6 +675,11 @@ the transition to 'v2'.
 
 ## Highlights from the 'v1' prototype
 
+The results of the preprint were derived in a [branch](https://github.com/cmu-catalyst/collage) from
+[TVM](https://github.com/apache/tvm) at `461d06eb5cfc7954f1983779acd05c47cea269f1`. We ported/rebased that code onto
+main, and refer to it as the
+['v1' prototype implementation](https://github.com/mbs-octoml/mbs-tvm/tree/mbs-collage-port).
+
 The 'v1' prototype has five main parts:
 
 - A
@@ -702,6 +687,7 @@ The 'v1' prototype has five main parts:
   field on every Relay `Expr` to capture the pattern name and backend name chosen by Collage to force compilation to
   match its choices.
 -
+
 An [intercept](https://github.com/mbs-octoml/mbs-tvm/blob/52d8780e879a9115b8a93e505bcd3a6c2646c61f/src/relay/transforms/fuse_ops.cc#L1392)
 in `fuse_ops.cc` which redirects to the main Collage fuser/searcher before TVM’s fusion rules kick in.
 
@@ -727,6 +713,27 @@ in `fuse_ops.cc` which redirects to the main Collage fuser/searcher before TVM�
 
 Note that the 'v1' prototype only supports `IRModules` with a single `"main"` whose body is in the ‘pure dataflow’ Relay
 subset. Ie only calls, tuples, tuple projections, function variables and constants are supported.
+
+## 'v1' to 'v2' Changes
+
+In comparison to the 'v1' prototype, this design:
+
+- Avoids the need to add any new 'Collage specific' fusion patterns and predicates. We want to make sure Collage can
+  work even for out-of-tree BYOC toolchains (modulo some of the BYOC API changes we discuss below).
+- Builds on the existing support for heterogeneous `Target`s to represent the menu of available toolchains to use during
+  search. In particular, we want to allow users to blend `on_device` annotations (to express preferences for which
+  devices should execute which sub-graphs) with Collage (to find the best kernels and toolchains respecting those device
+  preferences).
+- Uses the existing convention for `"Primitive"`, `"Composite"` and `"Compiler"` attributes on Relay `Function`s to
+  express the assignment of sub-graph to toolchain.
+- Implements support for 3rd party libraries (eg cudnn) so as to allow an N-to-1 mapping from Relay operators to library
+  call (this is not yet implemented in the 'v2' prototype, see below for the sketch).
+- Is implemented mostly in C++.
+
+However:
+
+- The 'v2' prototype only implements the 'op-level' dynamic-programming based search strategy from the paper. Though the
+  paper reports encouraging results with the 'graph-level' evolutionary-search strategy we leave that to future work.
 
 ## TODO in the 'v2' prototype
 
