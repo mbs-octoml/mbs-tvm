@@ -27,6 +27,7 @@ make_op_predicate_byoc_spec = tvm._ffi.get_global_func("relay.collage.make_op_pr
 make_labelled_dfpattern_fusion_rule = tvm._ffi.get_global_func("relay.collage.make_labelled_dfpattern_fusion_rule")
 make_pattern_byoc_spec = tvm._ffi.get_global_func("relay.collage.make_pattern_byoc_spec")
 
+
 def arg_for(type, device):
     """Returns a test argument for device of type"""
     return tvm.nd.array(np.random.uniform(-1.0, 1.0, size=type.concrete_shape).astype(type.dtype),
@@ -38,27 +39,31 @@ def estimate_seconds(function, target):
     """Returns the mean execution time of the "Primitive" function on target.
        The function should already have any additional attributes needed to guide compilation,
        lowering and codegen."""
-    device = tvm.device(target.kind.device_type)
 
-    # The function will be marked "Primitive", and may optionally have a "Compiler" or other
-    # annotation to guide lowering. Eta expand it so that we can compile a @main which will directly
-    # invokes that compiled kernel.
-    args = [arg_for(v.checked_type, device) for v in function.params]
-    new_params = [tvm.relay.Var(v.name_hint, v.checked_type) for v in function.params]
-    new_body = tvm.relay.Call(function, new_params)
-    main = tvm.relay.Function(new_params, new_body)
+    # Though nothing goes wrong, it makes debugging hard if we end up invoking CollageFuseOps when trying
+    # to compile a candidate kernel selected while CollageFuseOps is in-flight. So just disable it.
+    with tvm.transform.PassContext(config={"relay.collage.enable_collage": False}):
+        device = tvm.device(target.kind.device_type)
 
-    # Place that in a module and compile.
-    mod = tvm.IRModule.from_expr(main)
-    logging.info(f"Measuring overall module:\n{mod}")
-    exe = tvm.relay.vm.compile(mod, target)
+        # The function will be marked "Primitive", and may optionally have a "Compiler" or other
+        # annotation to guide lowering. Eta expand it so that we can compile a @main which will directly
+        # invokes that compiled kernel.
+        args = [arg_for(v.checked_type, device) for v in function.params]
+        new_params = [tvm.relay.Var(v.name_hint, v.checked_type) for v in function.params]
+        new_body = tvm.relay.Call(function, new_params)
+        main = tvm.relay.Function(new_params, new_body)
 
-    # Benchmark the module.
-    vm = tvm.runtime.vm.VirtualMachine(exe, device)
-    benchmark_result = vm.benchmark(device, repeat=5, number=20, *args)
+        # Place that in a module and compile.
+        mod = tvm.IRModule.from_expr(main)
+        logging.info(f"Measuring overall module:\n{mod}")
+        exe = tvm.relay.vm.compile(mod, target)
 
-    logging.info(benchmark_result)
-    return benchmark_result.mean  # seconds
+        # Benchmark the module.
+        vm = tvm.runtime.vm.VirtualMachine(exe, device)
+        benchmark_result = vm.benchmark(device, repeat=5, number=20, *args)
+
+        logging.info(benchmark_result)
+        return benchmark_result.mean  # seconds
 
 
 @register_func("tvm.relay.collage.make_fusion_spec")

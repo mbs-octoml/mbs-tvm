@@ -215,10 +215,12 @@ std::string IndexSet::ToString() const {
       os << ",";
     }
     os << start;
-    if (end > start + 1) {
+    if (end > start + 2) {
       os << ".." << (end - 1);
+      start = end;
+    } else {
+      ++start;
     }
-    start = end;
   }
   os << "}";
   return os.str();
