@@ -387,13 +387,13 @@ class OpCallByKindFusionRule : public FusionRule {
  * \brief Holds a vector of current candidates and the additions/removals to apply to them
  * based on the following 'primitive' rules.
  */
-class PrimRuleResults {
- public:
-  PrimRuleResults() = default;
-  void Add(const CandidateKernel& new_candidate);
+struct PrimRuleResults {
+  explicit PrimRuleResults(const SubGraphConfig* config) : config(config) {}
+  void Add(const DataflowGraph& dataflow_graph, const CandidateKernel& new_candidate);
   void Remove(const CandidateKernel& old_candidate);
   bool PrepareForNextRound();
 
+  const SubGraphConfig* config;
   std::vector<CandidateKernel> current_candidates;
   std::vector<CandidateKernel> candidates_to_add;
   std::vector<CandidateKernel> candidates_to_remove;
@@ -412,6 +412,9 @@ class SimplePrimRule {
 
   virtual bool Fires(const DataflowGraph& dataflow_graph, const CandidateKernel& upstream,
                      const CandidateKernel& downstream) const = 0;
+
+  virtual std::string ToString() const = 0;
+
   std::string prim_rule_name_;
 };
 
@@ -430,6 +433,8 @@ class ByKindSimplePrimRule : public SimplePrimRule {
 
   bool Fires(const DataflowGraph& dataflow_graph, const CandidateKernel& upstream,
              const CandidateKernel& downstream) const override;
+  std::string ToString() const override;
+
 
   OpPatternKind upstream_kind_;
   OpPatternKind downstream_kind_;
@@ -445,6 +450,7 @@ class PrimRule {
   virtual ~PrimRule() = default;
   virtual void AppendAllResults(const DataflowGraph& dataflow_graph,
                                 PrimRuleResults& results) const = 0;
+  virtual std::string ToString() const = 0;
 };
 
 /*!
@@ -458,6 +464,8 @@ class AllSimplePrimRules : public PrimRule {
 
   void AppendAllResults(const DataflowGraph& dataflow_graph,
                         PrimRuleResults& results) const override;
+  std::string ToString() const override;
+
   std::vector<std::unique_ptr<SimplePrimRule>> simple_prim_rules_;
 };
 
@@ -471,6 +479,7 @@ class TupleArgPrimRule : public PrimRule {
   ~TupleArgPrimRule() override = default;
   void AppendAllResults(const DataflowGraph& dataflow_graph,
                         PrimRuleResults& results) const override;
+  std::string ToString() const override;
 };
 
 /*!
@@ -483,6 +492,7 @@ class ConstantPrimRule : public PrimRule {
   ~ConstantPrimRule() override = default;
   void AppendAllResults(const DataflowGraph& dataflow_graph,
                         PrimRuleResults& results) const override;
+  std::string ToString() const override;
 };
 
 /*!
@@ -534,6 +544,8 @@ class CombineByPrimitivesFusionRuleNode : public FusionRuleNode {
  public:
   FusionRule sub_rule_;
   std::vector<std::unique_ptr<PrimRule>> prim_rules_;
+  /*! \brief Constraints to apply to all intermediate candidates. */
+  SubGraphConfig config_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
                                              const FusionSpec& spec) const override;
@@ -548,7 +560,8 @@ class CombineByPrimitivesFusionRuleNode : public FusionRuleNode {
 class CombineByPrimitivesFusionRule : public FusionRule {
  public:
   CombineByPrimitivesFusionRule(String rule_name, FusionRule sub_rule,
-                                std::vector<std::unique_ptr<PrimRule>> prim_rules);
+                                std::vector<std::unique_ptr<PrimRule>> prim_rules,
+                                size_t max_max_depth_ = 4);
 
   TVM_DEFINE_OBJECT_REF_METHODS(CombineByPrimitivesFusionRule, FusionRule,
                                 CombineByPrimitivesFusionRuleNode);

@@ -173,24 +173,28 @@ class Partitioner {
 
   Expr Partition(Expr expr) {
     VLOG_CONTEXT << "Partitioning";
+    // Establish data structures.
     dataflow_graph_ = CreateIndexedGraph(expr);
     name_supply_ = std::make_unique<NameSupply>("collage");
     VLOG(1) << "Created dataflow graph with " << dataflow_graph_->size() << " nodes";
-    // Index all the candidates (which will be owned by the index).
     CandidateKernelIndex index(dataflow_graph_.get());
     index.Index(fusion_specs_);
     VLOG(1) << "Indexed " << index.size() << " candidate kernels";
-    VLOG(1) << "Commencing search";
+
+    // Setup initial state.
     SearchState* init_state = GetState(IndexSet(dataflow_graph_->size()));
     init_state->best_cost_ = Cost::Zero();
     pq_.Push(init_state);
+
+    VLOG(1) << "Commencing search";
     while (!pq_.empty()) {
       SearchState* curr_state = pq_.Pop();
       VLOG(1) << "Looking at state " << curr_state->covered_.ToString();
       PostDfsIndex next_index = curr_state->covered_.FirstOutsideIndex();
+
       if (next_index >= dataflow_graph_->size()) {
-        VLOG(1) << "Finished search, recovering best candidates";
         // The entire expression has been explored. Collect the candidates on the optimal path.
+        VLOG(1) << "Finished search, recovering best candidates";
         std::vector<CandidateKernel> best_candidates;
         while (curr_state != nullptr) {
           if (curr_state->best_candidate_kernel_.defined()) {
@@ -203,10 +207,13 @@ class Partitioner {
         return CandidateKernel::ParallelPartition(std::move(dataflow_graph_), std::move(expr),
                                                   std::move(best_candidates));
       }
+
       size_t num_fires = 0;
       Expr sub_expr = dataflow_graph_->index_to_node(next_index)->ref();
       VLOG(1) << "Looking at index " << next_index << " for sub-expression "
               << SubExprKindAndLabel(sub_expr).second;
+
+      // Explore all the outgoing candidates from the current state.
       for (const auto& candidate_kernel : index.candidate_kernels_at(next_index)) {
         VLOG(1) << "Considering candidate kernel " << candidate_kernel->ToString();
         if (!candidate_kernel->sub_graph_->inside_.AreDisjoint(curr_state->covered_)) {
@@ -218,13 +225,14 @@ class Partitioner {
         Relax(curr_state, next_state, candidate_kernel);
         ++num_fires;
       }
+
       if (MustBeLowered(sub_expr)) {
         ICHECK_GT(num_fires, 0)
             << "No candidate was found covering sub-expression at index " << next_index
             << ", suggesting the fusion rules are incomplete for the given targets.";
       } else {
         // It is (also) possible to leave this sub-expression to be evaluated by the VM.
-        // However, we'll assume that evaluation cost is zero.
+        // We'll assume that evaluation cost is zero.
         VLOG(1) << "Allowing possibility of current sub-expression being left behind";
         IndexSet next_covered =
             curr_state->covered_ | IndexSet(dataflow_graph_->size(), {next_index});
