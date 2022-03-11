@@ -18,7 +18,7 @@
  */
 
 /*!
- * \file src/relay/transforms/collage_fuse_ops.cc
+ * \file src/relay/collage/collage_fuse_ops.cc
  * \brief Search for optimal fused sub-graphs and targets.
  */
 
@@ -38,10 +38,12 @@
 #include "./cost.h"
 #include "./cost_estimator.h"
 #include "./fusion_rule.h"
+#include "./fusion_spec.h"
+#include "./gather_fusion_specs.h"
 #include "./name_supply.h"
 #include "./priority_queue.h"
 #include "./sub_graph.h"
-#include "utils.h"
+#include "./utils.h"
 
 namespace tvm {
 namespace relay {
@@ -123,14 +125,11 @@ class CandidateKernelIndex {
         first_inside_index_to_candidates_(dataflow_graph->size()) {}
 
   /*! \brief Constructs the index. */
-  void Index(const Expr& expr, const Array<FusionSpec>& fusion_specs, NameSupply* name_supply) {
+  void Index(const Array<FusionSpec>& fusion_specs) {
     for (const auto& fusion_spec : fusion_specs) {
       VLOG_CONTEXT << "spec " << fusion_spec->spec_name_;
-      Array<CandidateKernel> candidates =
-          fusion_spec->AllCandidateKernels(*dataflow_graph_, name_supply);
-      // For each candidate...
+      Array<CandidateKernel> candidates = fusion_spec->AllCandidateKernels(*dataflow_graph_);
       for (auto& candidate : candidates) {
-        // We now own the candidate
         all_candidate_kernels_.push_back(candidate);
         PostDfsIndex first_inside_index = candidate->sub_graph_->first_inside_index_;
         ICHECK_LT(first_inside_index, dataflow_graph_->size());
@@ -174,22 +173,22 @@ class Partitioner {
 
   Expr Partition(Expr expr) {
     VLOG_CONTEXT << "Partitioning";
-    std::unique_ptr<DataflowGraph> dataflow_graph = CreateIndexedGraph(expr);
-    VLOG(1) << "Creating dataflow graph with " << dataflow_graph->size() << " nodes";
+    dataflow_graph_ = CreateIndexedGraph(expr);
+    name_supply_ = std::make_unique<NameSupply>("collage");
+    VLOG(1) << "Created dataflow graph with " << dataflow_graph_->size() << " nodes";
     // Index all the candidates (which will be owned by the index).
-    CandidateKernelIndex index(dataflow_graph.get());
-    NameSupply name_supply("collage");
-    index.Index(expr, fusion_specs_, &name_supply);
+    CandidateKernelIndex index(dataflow_graph_.get());
+    index.Index(fusion_specs_);
     VLOG(1) << "Indexed " << index.size() << " candidate kernels";
     VLOG(1) << "Commencing search";
-    SearchState* init_state = GetState(IndexSet(dataflow_graph->size()));
+    SearchState* init_state = GetState(IndexSet(dataflow_graph_->size()));
     init_state->best_cost_ = Cost::Zero();
     pq_.Push(init_state);
     while (!pq_.empty()) {
       SearchState* curr_state = pq_.Pop();
       VLOG(1) << "Looking at state " << curr_state->covered_.ToString();
       PostDfsIndex next_index = curr_state->covered_.FirstOutsideIndex();
-      if (next_index >= dataflow_graph->size()) {
+      if (next_index >= dataflow_graph_->size()) {
         VLOG(1) << "Finished search, recovering best candidates";
         // The entire expression has been explored. Collect the candidates on the optimal path.
         std::vector<CandidateKernel> best_candidates;
@@ -201,11 +200,11 @@ class Partitioner {
           }
           curr_state = curr_state->pred_state_;
         }
-        return CandidateKernel::ParallelPartition(std::move(dataflow_graph), std::move(expr),
+        return CandidateKernel::ParallelPartition(std::move(dataflow_graph_), std::move(expr),
                                                   std::move(best_candidates));
       }
       size_t num_fires = 0;
-      Expr sub_expr = dataflow_graph->index_to_node(next_index)->ref();
+      Expr sub_expr = dataflow_graph_->index_to_node(next_index)->ref();
       VLOG(1) << "Looking at index " << next_index << " for sub-expression "
               << SubExprKindAndLabel(sub_expr).second;
       for (const auto& candidate_kernel : index.candidate_kernels_at(next_index)) {
@@ -228,7 +227,7 @@ class Partitioner {
         // However, we'll assume that evaluation cost is zero.
         VLOG(1) << "Allowing possibility of current sub-expression being left behind";
         IndexSet next_covered =
-            curr_state->covered_ | IndexSet(dataflow_graph->size(), {next_index});
+            curr_state->covered_ | IndexSet(dataflow_graph_->size(), {next_index});
         SearchState* next_state = GetState(next_covered);
         Relax(curr_state, next_state, /*candidate=*/{});
       }
@@ -257,8 +256,8 @@ class Partitioner {
   void Relax(SearchState* curr_state, SearchState* next_state, CandidateKernel candidate) {
     Cost candidate_cost = Cost::Zero();
     if (candidate.defined()) {
-      candidate_cost = candidate->EstimatedCost(&cost_estimator_);
-      VLOG(1) << "cost of " << candidate->ToString() << " is " << candidate_cost.ToString();
+      candidate_cost =
+          candidate->EstimatedCost(*dataflow_graph_, &cost_estimator_, name_supply_.get());
     }
     Cost new_state_cost = candidate_cost + curr_state->best_cost_;
     const bool is_new = next_state->best_cost_.is_invalid();
@@ -288,6 +287,8 @@ class Partitioner {
   }
 
  private:
+  std::unique_ptr<DataflowGraph> dataflow_graph_;
+  std::unique_ptr<NameSupply> name_supply_;
   /*! \brief Available fusion specs to use during search. */
   Array<FusionSpec> fusion_specs_;
   /*! \brief Cost estimator to use for candidate kernels. */
@@ -298,30 +299,6 @@ class Partitioner {
   /*! \brief Priority queue of states, ordered by increasing cost. */
   PriorityQueue<SearchState, CompareSearchStatePtrs, EqualSearchStatePtrs> pq_;
 };
-
-/*!
- * \brief Returns all the fusion specifications gathered from all targets in the compilation
- * config.
- */
-Array<FusionSpec> GatherFusionSpecs(const CompilationConfig& config) {
-  Array<FusionSpec> result;
-  for (const auto& target : config->primitive_targets) {
-    // We implement this on the python side only so that we can get access to the BYOC
-    // pattern registry. Otherwise for the most part this implementation just bounces right
-    // back into the construction helpers in fusion_rule.cc.
-    static const runtime::PackedFunc* make_fusion_spec =
-        runtime::Registry::Get("tvm.relay.collage.make_fusion_spec");
-    ICHECK(make_fusion_spec);
-    FusionSpec spec = (*make_fusion_spec)(target);
-    VLOG(1) << "using spec:\n" << spec->ToString();
-    result.push_back(spec);
-  }
-  // TODO(mbs): Note that if we have multiple 'TVM' targets (eg for different devices) we'll end
-  // up finding the same candidates for each such. We should allow a FusionSpec to have multiple
-  // targets to avoid this, and rely on target refinement from the DevicePlanPass's assigned
-  // virtual devices to pick the one to actually use when estimating a candidate's cost.
-  return result;
-}
 
 }  // namespace
 

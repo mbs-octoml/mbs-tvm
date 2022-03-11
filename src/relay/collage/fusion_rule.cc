@@ -23,18 +23,18 @@
  */
 
 #include "./fusion_rule.h"
+#include "./fusion_spec.h"
 
 #include <tvm/relay/transform.h>
 
-#include "utils.h"
+#include "./utils.h"
 
 namespace tvm {
 namespace relay {
 namespace collage {
 
 Array<CandidateKernel> FusionRuleNode::AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                                           const FusionSpec& spec,
-                                                           NameSupply* name_supply) const {
+                                                           const FusionSpec& spec) const {
   ICHECK(false) << "FusionRuleNode::AllCandidateKernels should be overridden in sub-class";
   return {};
 }
@@ -54,21 +54,18 @@ Doc FusionRuleNode::ToDoc() const {
 void FusionRuleNode::AppendBodyItems(std::vector<Doc>& body_items) const {
   body_items.emplace_back();
   body_items.back() << "rule_name=" << Doc::StrLiteral(rule_name_);
-  body_items.emplace_back();
-  body_items.back() << "priority=" << priority_;
 }
 
-FusionRule::FusionRule(String rule_name, int priority) {
+FusionRule::FusionRule(String rule_name) {
   auto node = runtime::make_object<FusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
-  node->priority_ = priority;
   data_ = std::move(node);
 }
 
 bool DefaultPatternPredicate(const Expr& matched_sub_expr) { return true; }
 
 Array<CandidateKernel> DFPatternFusionRuleNode::AllCandidateKernels(
-    const DataflowGraph& dataflow_graph, const FusionSpec& spec, NameSupply* name_supply) const {
+    const DataflowGraph& dataflow_graph, const FusionSpec& spec) const {
   Array<CandidateKernel> result;
   DFPatternMatcher matcher(&dataflow_graph);
   for (PostDfsIndex index = 0; index < dataflow_graph.size(); ++index) {
@@ -85,7 +82,7 @@ Array<CandidateKernel> DFPatternFusionRuleNode::AllCandidateKernels(
     std::tie(kind, label) = SubGraphKindAndLabel(dataflow_graph, inside);
     SubGraph sub_graph(dataflow_graph, std::move(inside), kind, std::move(label));
     String rule_name = NestLabels(rule_name_, sub_graph->label_);
-    CandidateKernel candidate(std::move(rule_name), priority_, std::move(sub_graph), spec);
+    CandidateKernel candidate(std::move(rule_name), std::move(sub_graph), spec);
     VLOG(1) << "DFPatternFusionRule(" << rule_name_ << ") yields " << candidate->ToString();
     result.push_back(candidate);
   }
@@ -98,18 +95,17 @@ void DFPatternFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_items) cons
   body_items.back() << "pattern=" << PrettyPrint(pattern_);
 }
 
-DFPatternFusionRule::DFPatternFusionRule(String rule_name, int priority, DFPattern pattern,
+DFPatternFusionRule::DFPatternFusionRule(String rule_name, DFPattern pattern,
                                          TPatternPredicate predicate) {
   auto node = runtime::make_object<DFPatternFusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
-  node->priority_ = priority;
   node->pattern_ = std::move(pattern);
   node->predicate_ = std::move(predicate);
   data_ = std::move(node);
 }
 
 Array<CandidateKernel> OpPredicateFusionRuleNode::AllCandidateKernels(
-    const DataflowGraph& dataflow_graph, const FusionSpec& spec, NameSupply* name_supply) const {
+    const DataflowGraph& dataflow_graph, const FusionSpec& spec) const {
   Array<CandidateKernel> result;
   for (PostDfsIndex index = 0; index < dataflow_graph.size(); ++index) {
     auto node = dataflow_graph.index_to_node(index);
@@ -160,7 +156,7 @@ Array<CandidateKernel> OpPredicateFusionRuleNode::AllCandidateKernels(
     std::tie(kind, label) = SubExprKindAndLabel(sub_expr);
     SubGraph sub_graph(dataflow_graph, std::move(inside), kind, std::move(label));
     String rule_name = NestLabels(rule_name_, sub_graph->label_);
-    CandidateKernel candidate(std::move(rule_name), priority_, std::move(sub_graph), spec);
+    CandidateKernel candidate(std::move(rule_name), std::move(sub_graph), spec);
     VLOG(1) << "OpPredicateFusionRule(" << rule_name_ << ") yields " << candidate->ToString();
     result.push_back(candidate);
   }
@@ -171,6 +167,7 @@ Array<CandidateKernel> OpPredicateFusionRuleNode::AllCandidateKernels(
 std::pair<Expr, IndexSet> OpPredicateFusionRuleNode::Extract(const DataflowGraph& dataflow_graph,
                                                              const DataflowGraph::Node* node,
                                                              bool include_const_args) {
+  VLOG_CONTEXT << "OpPredicateFusionRule Extract";
   IndexSet inside(dataflow_graph.size(), {node->index_});
   if (include_const_args) {
     for (const auto* input_node : node->inputs_) {
@@ -190,23 +187,21 @@ void OpPredicateFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_items) co
   body_items.back() << "attribute=" << Doc::StrLiteral(attribute_);
 }
 
-OpPredicateFusionRule::OpPredicateFusionRule(String rule_name, int priority, String attribute) {
+OpPredicateFusionRule::OpPredicateFusionRule(String rule_name, String attribute) {
   auto node = runtime::make_object<OpPredicateFusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
-  node->priority_ = priority;
   node->attribute_ = std::move(attribute);
   data_ = std::move(node);
 }
 
 Array<CandidateKernel> CompositeFusionRuleNode::AllCandidateKernels(
-    const DataflowGraph& dataflow_graph, const FusionSpec& spec, NameSupply* name_supply) const {
-  Array<CandidateKernel> candidates =
-      sub_rule_->AllCandidateKernels(dataflow_graph, spec, name_supply);
+    const DataflowGraph& dataflow_graph, const FusionSpec& spec) const {
+  Array<CandidateKernel> candidates = sub_rule_->AllCandidateKernels(dataflow_graph, spec);
   Array<CandidateKernel> result;
-  for (auto& candidate : candidates) {
-    CandidateKernel new_candidate(
-        NestLabels(rule_name_, candidate->rule_name_), candidate->priority_,
-        candidate->sub_graph_.WithLabel(dataflow_graph, rule_name_), candidate->spec_);
+  for (const auto& candidate : candidates) {
+    CandidateKernel new_candidate(NestLabels(rule_name_, candidate->rule_name_),
+                                  candidate->sub_graph_.WithLabel(dataflow_graph, rule_name_),
+                                  candidate->spec_);
     VLOG(1) << "CompositeFusionRule(" << rule_name_ << ") yields " << new_candidate->ToString();
     result.push_back(new_candidate);
   }
@@ -219,24 +214,21 @@ void CompositeFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_items) cons
   body_items.back() << "sub_rule=" << sub_rule_->ToDoc();
 }
 
-CompositeFusionRule::CompositeFusionRule(String rule_name, int priority, FusionRule sub_rule) {
+CompositeFusionRule::CompositeFusionRule(String rule_name, FusionRule sub_rule) {
   auto node = runtime::make_object<CompositeFusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
-  node->priority_ = priority;
   node->sub_rule_ = std::move(sub_rule);
   data_ = std::move(node);
 }
 
 Array<CandidateKernel> UnionFusionRuleNode::AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                                                const FusionSpec& spec,
-                                                                NameSupply* name_supply) const {
+                                                                const FusionSpec& spec) const {
   Array<CandidateKernel> result;
   for (const auto& sub_rule : sub_rules_) {
-    Array<CandidateKernel> candidates =
-        sub_rule->AllCandidateKernels(dataflow_graph, spec, name_supply);
-    for (auto& candidate : candidates) {
+    Array<CandidateKernel> candidates = sub_rule->AllCandidateKernels(dataflow_graph, spec);
+    for (const auto& candidate : candidates) {
       CandidateKernel new_candidate(NestLabels(rule_name_, candidate->rule_name_),
-                                    candidate->priority_, candidate->sub_graph_, candidate->spec_);
+                                    candidate->sub_graph_, candidate->spec_);
       VLOG(1) << "UnionFusionRule(" << rule_name_ << ") yields " << new_candidate->ToString();
       result.push_back(candidate);
     }
@@ -252,18 +244,16 @@ void UnionFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_items) const {
   }
 }
 
-UnionFusionRule::UnionFusionRule(String rule_name, int priority, Array<FusionRule> sub_rules) {
+UnionFusionRule::UnionFusionRule(String rule_name, Array<FusionRule> sub_rules) {
   auto node = runtime::make_object<UnionFusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
-  node->priority_ = priority;
   node->sub_rules_ = std::move(sub_rules);
   data_ = std::move(node);
 }
 
 Array<CandidateKernel> MaxCoalesceFusionRuleNode::AllCandidateKernels(
-    const DataflowGraph& dataflow_graph, const FusionSpec& spec, NameSupply* name_supply) const {
-  Array<CandidateKernel> candidates =
-      sub_rule_->AllCandidateKernels(dataflow_graph, spec, name_supply);
+    const DataflowGraph& dataflow_graph, const FusionSpec& spec) const {
+  Array<CandidateKernel> candidates = sub_rule_->AllCandidateKernels(dataflow_graph, spec);
   std::vector<CandidateKernel> sorted_candidates(candidates.begin(), candidates.end());
   // TODO(mbs): Quick hack, does not handle overlapping candidates properly.
   // Sort the candidates by their first-inside index.
@@ -286,8 +276,7 @@ Array<CandidateKernel> MaxCoalesceFusionRuleNode::AllCandidateKernels(
         ++itr;
       }
     }
-    base = CandidateKernel(NestLabels(rule_name_, base->rule_name_), base->priority_,
-                           base->sub_graph_, base->spec_);
+    base = CandidateKernel(NestLabels(rule_name_, base->rule_name_), base->sub_graph_, base->spec_);
     VLOG(1) << "MaxCoalesceFusionRule(" << rule_name_ << ") yields " << base->ToString();
     result.push_back(base);
   }
@@ -300,16 +289,15 @@ void MaxCoalesceFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_items) co
   body_items.back() << "sub_rule=" << sub_rule_->ToDoc();
 }
 
-MaxCoalesceFusionRule::MaxCoalesceFusionRule(String rule_name, int priority, FusionRule sub_rule) {
+MaxCoalesceFusionRule::MaxCoalesceFusionRule(String rule_name, FusionRule sub_rule) {
   auto node = runtime::make_object<MaxCoalesceFusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
-  node->priority_ = priority;
   node->sub_rule_ = std::move(sub_rule);
   data_ = std::move(node);
 }
 
 Array<CandidateKernel> OpCallByKindFusionRuleNode::AllCandidateKernels(
-    const DataflowGraph& dataflow_graph, const FusionSpec& spec, NameSupply* name_supply) const {
+    const DataflowGraph& dataflow_graph, const FusionSpec& spec) const {
   Array<CandidateKernel> result;
   for (PostDfsIndex index = 0; index < dataflow_graph.size(); ++index) {
     auto node = dataflow_graph.index_to_node(index);
@@ -322,7 +310,7 @@ Array<CandidateKernel> OpCallByKindFusionRuleNode::AllCandidateKernels(
         IndexSet inside(dataflow_graph.size(), {index});
         SubGraph sub_graph(dataflow_graph, std::move(inside), kind, std::move(label));
         String rule_name = NestLabels(rule_name_, sub_graph->label_);
-        CandidateKernel candidate(std::move(rule_name), priority_, std::move(sub_graph), spec);
+        CandidateKernel candidate(std::move(rule_name), std::move(sub_graph), spec);
         VLOG(1) << "OpCallByKindFusionRule(" << rule_name_ << ") yields " << candidate->ToString();
         result.push_back(candidate);
       }
@@ -335,10 +323,9 @@ void OpCallByKindFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_items) c
   FusionRuleNode::AppendBodyItems(body_items);
 }
 
-OpCallByKindFusionRule::OpCallByKindFusionRule(String rule_name, int priority) {
+OpCallByKindFusionRule::OpCallByKindFusionRule(String rule_name) {
   auto node = runtime::make_object<OpCallByKindFusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
-  node->priority_ = priority;
   data_ = std::move(node);
 }
 
@@ -377,7 +364,7 @@ bool PrimRuleResults::PrepareForNextRound() {
     VLOG(1) << "no new candidates, stopping search";
     return false;
   }
-  for (auto& new_candidate : candidates_to_add) {
+  for (const auto& new_candidate : candidates_to_add) {
     current_candidates.push_back(new_candidate);
   }
   VLOG(1) << "added " << candidates_to_add.size() << " candidates";
@@ -498,7 +485,7 @@ void ConstantPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
     }
     if (!new_constants.IsZero()) {
       SubGraph sub_graph(dataflow_graph, new_constants, kElemWise, "const");
-      CandidateKernel new_const_candidate("", /*priority=*/0, std::move(sub_graph), base->spec_);
+      CandidateKernel new_const_candidate("", std::move(sub_graph), base->spec_);
       CandidateKernel new_candidate = base.DisjointUnion(dataflow_graph, new_const_candidate);
       VLOG(1) << "Fired const rule on " << new_const_candidate->ToString() << " and "
               << base->ToString() << " to yield " << new_candidate->ToString();
@@ -508,39 +495,11 @@ void ConstantPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
   }
 }
 
-namespace {
-std::vector<std::unique_ptr<PrimRule>> TVMPrimRules() {
-  std::vector<std::unique_ptr<SimplePrimRule>> simple_prim_rules;
-  simple_prim_rules.emplace_back(
-      std::make_unique<ByKindSimplePrimRule>("A->B", kOutEWiseFusable, kBroadcast));
-  simple_prim_rules.emplace_back(
-      std::make_unique<ByKindSimplePrimRule>("B->R", kBroadcast, kCommReduce));
-  simple_prim_rules.emplace_back(
-      std::make_unique<ByKindSimplePrimRule>("I->I", kInjective, kInjective));
-
-  std::vector<std::unique_ptr<PrimRule>> prim_rules;
-  prim_rules.emplace_back(std::make_unique<AllSimplePrimRules>(std::move(simple_prim_rules)));
-  prim_rules.emplace_back(std::make_unique<TupleArgPrimRule>());
-  return prim_rules;
-}
-
-std::vector<std::unique_ptr<PrimRule>> DefaultBYOCPrimRules() {
-  std::vector<std::unique_ptr<SimplePrimRule>> simple_prim_rules;
-  simple_prim_rules.emplace_back(
-      std::make_unique<ByKindSimplePrimRule>("A->A", kOutEWiseFusable, kOutEWiseFusable));
-  std::vector<std::unique_ptr<PrimRule>> prim_rules;
-  prim_rules.emplace_back(std::make_unique<AllSimplePrimRules>(std::move(simple_prim_rules)));
-  return prim_rules;
-}
-
-}  // namespace
-
 Array<CandidateKernel> CombineByPrimitivesFusionRuleNode::AllCandidateKernels(
-    const DataflowGraph& dataflow_graph, const FusionSpec& spec, NameSupply* name_supply) const {
+    const DataflowGraph& dataflow_graph, const FusionSpec& spec) const {
   // We'll accumulate all the candidates here, starting with those from the sub-rule.
   // Once a candidate is added to this vector it is immutable.
-  Array<CandidateKernel> initial_candidates =
-      sub_rule_->AllCandidateKernels(dataflow_graph, spec, name_supply);
+  Array<CandidateKernel> initial_candidates = sub_rule_->AllCandidateKernels(dataflow_graph, spec);
   PrimRuleResults rule_results;
   for (const auto& candidate : initial_candidates) {
     rule_results.Add(candidate);
@@ -556,9 +515,9 @@ Array<CandidateKernel> CombineByPrimitivesFusionRuleNode::AllCandidateKernels(
   }
 
   Array<CandidateKernel> result;
-  for (auto& candidate : rule_results.current_candidates) {
+  for (const auto& candidate : rule_results.current_candidates) {
     CandidateKernel new_candidate(NestLabels(rule_name_, candidate->rule_name_),
-                                  candidate->priority_, candidate->sub_graph_, candidate->spec_);
+                                  candidate->sub_graph_, candidate->spec_);
     VLOG(1) << "CombineByPrimitivesFusionRule(" << rule_name_ << ") yields "
             << new_candidate->ToString();
     result.push_back(new_candidate);
@@ -573,163 +532,47 @@ void CombineByPrimitivesFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_i
 }
 
 CombineByPrimitivesFusionRule::CombineByPrimitivesFusionRule(
-    String rule_name, int priority, FusionRule sub_rule,
-    std::vector<std::unique_ptr<PrimRule>> prim_rules) {
+    String rule_name, FusionRule sub_rule, std::vector<std::unique_ptr<PrimRule>> prim_rules) {
   auto node = runtime::make_object<CombineByPrimitivesFusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
-  node->priority_ = priority;
   node->sub_rule_ = std::move(sub_rule);
   node->prim_rules_ = std::move(prim_rules);
   data_ = std::move(node);
 }
 
-Optional<Function> DefaultRewriteSubGraphFunc(const Function& function) { return function; }
-
-FusionSpec::FusionSpec(String spec_name, Target target, FusionRule rule, SubGraphConfig config,
-                       TRewriteSubGraphFunc fused_result_func) {
-  auto node = runtime::make_object<FusionSpecNode>();
-  node->spec_name_ = std::move(spec_name);
-  node->target_ = std::move(target);
-  node->rule_ = std::move(rule);
-  node->fused_result_func_ = std::move(fused_result_func);
-  node->config_ = config;
-  data_ = std::move(node);
-}
-
-Array<CandidateKernel> FusionSpecNode::AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                                           NameSupply* name_supply) const {
-  Array<CandidateKernel> all_candidates =
-      rule_->AllCandidateKernels(dataflow_graph, GetRef<FusionSpec>(this), name_supply);
+Array<CandidateKernel> OnlyValidFusionRuleNode::AllCandidateKernels(
+    const DataflowGraph& dataflow_graph, const FusionSpec& spec) const {
   Array<CandidateKernel> result;
-  for (auto& candidate : all_candidates) {
+  Array<CandidateKernel> candidates = sub_rule_->AllCandidateKernels(dataflow_graph, spec);
+  for (const auto& candidate : candidates) {
     if (!candidate->sub_graph_->IsValid(dataflow_graph, config_)) {
-      VLOG(1) << "Rejected candidate: not valid for " << candidate->ToString();
-      continue;
+      VLOG(1) << "Ignoring invalid candidate " << candidate->ToString();
+    } else {
+      CandidateKernel new_candidate(NestLabels(rule_name_, candidate->rule_name_),
+                                    candidate->sub_graph_, candidate->spec_);
+      VLOG(1) << "OnlyValidFusionRule(" << rule_name_ << ") yields " << new_candidate->ToString();
+      result.push_back(new_candidate);
     }
-    ICHECK_EQ(candidate->spec_, GetRef<FusionSpec>(this));
-    ICHECK(!candidate->function_.defined());
-    Function extracted_function = candidate->sub_graph_->ExtractFunction(dataflow_graph);
-    Optional<Function> opt_rewritten_function = fused_result_func_(extracted_function);
-    if (!opt_rewritten_function) {
-      VLOG(1) << "Rejected candidate: fused_result_func yielded none for " << candidate->ToString();
-      continue;
-    }
-    Function rewritten_function = opt_rewritten_function.value();
-    rewritten_function = Downcast<Function>(transform::InferTypeExpr(rewritten_function));
-    Map<String, ObjectRef> attrs;
-    // The partitioned function must be marked as "Primitive" so we don't attempt to do
-    // any further processing within it.
-    attrs.Set(attr::kPrimitive, Integer(1));
-    Optional<String> opt_compiler = target_->GetAttr("compiler", Optional<String>());
-    if (opt_compiler) {
-      // Also include the target's "Compiler" attribute on the function so the correct BYOC
-      // codegen will take place during lowering.
-      attrs.Set(attr::kCompiler, opt_compiler.value());
-      // Make sure the kernel has a global name.
-      attrs.Set(tvm::attr::kGlobalSymbol,
-                String(name_supply->Fresh({(std::string)candidate->rule_name_})));
-    }
-    rewritten_function = WithAttrs(std::move(rewritten_function), std::move(attrs));
-    CandidateKernel new_candidate(NestLabels(spec_name_, candidate->rule_name_),
-                                  candidate->priority_, candidate->sub_graph_, candidate->spec_,
-                                  std::move(rewritten_function));
-    result.push_back(new_candidate);
   }
   return result;
 }
 
-std::string FusionSpecNode::ToString() const {
-  Doc doc;
-  doc << "FusionSpec(" << Doc::NewLine(2);
-  std::vector<Doc> body_items;
+void OnlyValidFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_items) const {
+  FusionRuleNode::AppendBodyItems(body_items);
   body_items.emplace_back();
-  body_items.back() << "spec_name=" << Doc::StrLiteral(spec_name_);
+  body_items.back() << "sub_rule=" << sub_rule_->ToDoc();
   body_items.emplace_back();
-  body_items.back() << "target=" << target_->ToDebugString();
-  body_items.emplace_back();
-  body_items.back() << "rule=" << rule_->ToDoc();
-  doc << Doc::Indent(2, Doc::Concat(body_items, Doc::NewLine())) << Doc::NewLine();
-  doc << ")";
-  return doc.str();
+  body_items.back() << "config=" << config_.ToString();
 }
 
-/*! \brief Returns fusion spec mimicking TVM FuseOps. */
-FusionSpec MakeTVMFusionSpec(Target target) {
-  // Build singleton candidates for all calls to ops <= kOutEWiseFusable.
-  OpCallByKindFusionRule op_call_by_kind("", /*priority=*/0);
-  // Find fusion groups combining the above according to the TVM fusion rules.
-  CombineByPrimitivesFusionRule combine("", /*priority=*/0, std::move(op_call_by_kind),
-                                        TVMPrimRules());
-  SubGraphConfig config;
-  config.allow_taps = false;
-  config.max_max_depth = 3;
-  config.max_outputs = 1;
-  return FusionSpec("tvm", std::move(target), std::move(combine), config);
+OnlyValidFusionRule::OnlyValidFusionRule(String rule_name, FusionRule sub_rule,
+                                         const SubGraphConfig& config) {
+  auto node = runtime::make_object<OnlyValidFusionRuleNode>();
+  node->rule_name_ = std::move(rule_name);
+  node->sub_rule_ = std::move(sub_rule);
+  node->config_ = config;
+  data_ = std::move(node);
 }
-
-/*! \brief Returns fusion rule mimicking one entry in the patterns list passed to the
- * MergeComposite pass. */
-FusionRule MakeLabelledDFPatternFusionRule(String rule_name, DFPattern dataflow_pattern,
-                                           TPatternPredicate predicate) {
-  DFPatternFusionRule pattern_rule("", /*priority=*/0, std::move(dataflow_pattern),
-                                   std::move(predicate));
-  return CompositeFusionRule(std::move(rule_name), /*priority=*/0, std::move(pattern_rule));
-}
-
-/*!
- * \brief Returns fusion spec mimicking AnnotateTarget/MergeCompilerRegions/PartitionGraph
- * for "compiler" attribute of \p target.
- */
-FusionSpec MakeOpPredicateBYOCSpec(Target target) {
-  Optional<String> opt_compiler = target->GetAttr("compiler", Optional<String>());
-  ICHECK(opt_compiler.defined());
-  std::string compiler = opt_compiler.value();
-  // Build singleton candidates for all calls to supported ops.
-  OpPredicateFusionRule singleton("", /*priority=*/0, "target." + compiler);
-  // Find fusion groups combining any touching non-opaque candidates
-  CombineByPrimitivesFusionRule combine("", /*priority=*/0, std::move(singleton),
-                                        DefaultBYOCPrimRules());
-  SubGraphConfig config;
-  config.allow_taps = false;
-  config.max_max_depth = 3;
-  config.max_outputs = 1;
-  return FusionSpec(compiler, std::move(target), std::move(combine), config);
-}
-
-/*!
- * \brief Returns fusion spec mimicking
- * MergeComposite/AnnotateTarget/MergeCompilerRegions/PartitionGraph passes for "compiler"
- * attribute of \p target.
- */
-FusionSpec MakePatternBYOCSpec(Target target, Array<FusionRule> sub_rules) {
-  Optional<String> opt_compiler = target->GetAttr("compiler", Optional<String>());
-  ICHECK(opt_compiler.defined());
-  std::string compiler = opt_compiler.value();
-
-  // Union all the individual pattern rules.
-  UnionFusionRule unioned("", /*priority=*/0, std::move(sub_rules));
-  // Find fusion groups combining any touching non-opaque candidates.
-  CombineByPrimitivesFusionRule combine("", /*priority=*/0, std::move(unioned),
-                                        DefaultBYOCPrimRules());
-  SubGraphConfig config;
-  config.allow_taps = false;
-  config.max_max_depth = 3;
-  config.max_outputs = 1;
-  return FusionSpec(compiler, std::move(target), std::move(combine), config);
-}
-
-TVM_REGISTER_GLOBAL("relay.collage.make_labelled_dfpattern_fusion_rule")
-    .set_body_typed([](String rule_name, DFPattern dataflow_pattern, TPatternPredicate predicate) {
-      return MakeLabelledDFPatternFusionRule(std::move(rule_name), std::move(dataflow_pattern),
-                                             std::move(predicate));
-    });
-
-TVM_REGISTER_GLOBAL("relay.collage.make_tvm_fusion_spec").set_body_typed(MakeTVMFusionSpec);
-
-TVM_REGISTER_GLOBAL("relay.collage.make_op_predicate_byoc_spec")
-    .set_body_typed(MakeOpPredicateBYOCSpec);
-
-TVM_REGISTER_GLOBAL("relay.collage.make_pattern_byoc_spec").set_body_typed(MakePatternBYOCSpec);
 
 }  // namespace collage
 }  // namespace relay

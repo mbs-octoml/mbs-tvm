@@ -24,7 +24,10 @@
 
 #include "./candidate_kernel.h"
 
+#include <tvm/relay/transform.h>
+
 #include "./fusion_rule.h"
+#include "./fusion_spec.h"
 
 namespace tvm {
 namespace relay {
@@ -36,14 +39,16 @@ std::string CandidateKernelNode::fusion_spec_name() const {
   return Downcast<FusionSpec>(spec_)->spec_name_;
 }
 
-Target CandidateKernelNode::target() const { return Downcast<FusionSpec>(spec_)->target_; }
-
 std::string CandidateKernelNode::ToString() const {
   std::ostringstream os;
   os << "{rule_name=" << rule_name_;
   os << ",sub_graph=" << sub_graph_->ToString();
-  if (spec_.defined()) {
-    os << ",spec_name=" << fusion_spec_name();
+  os << ",spec_name=" << fusion_spec_name();
+  if (target_.defined()) {
+    os << ",target=" << target_->ToDebugString();
+  }
+  if (function_.defined()) {
+    os << ",function=...";
   }
   if (!cost_.is_unknown()) {
     os << ",cost=" << cost_.ToString();
@@ -52,15 +57,56 @@ std::string CandidateKernelNode::ToString() const {
   return os.str();
 }
 
-Cost CandidateKernelNode::EstimatedCost(CostEstimator* cost_estimator) const {
+Cost CandidateKernelNode::EstimatedCost(const DataflowGraph& dataflow_graph,
+                                        CostEstimator* cost_estimator,
+                                        NameSupply* name_supply) const {
+  ICHECK(target_.defined());
   if (cost_.is_unknown()) {
     VLOG_CONTEXT << "spec " << fusion_spec_name();
-    VLOG(1) << "Estimating cost of:\n" << PrettyPrint(function_);
-    cost_ = cost_estimator->CachedEstimate(function_, target());
+    ICHECK(!function_.defined());
+    Function extracted_function = sub_graph_->ExtractFunction(dataflow_graph);
+    VLOG(1) << "Rewriting function:\n" << PrettyPrint(extracted_function);
+    Optional<Function> opt_rewritten_function =
+        fusion_spec()->fused_result_func_(extracted_function);
+    if (!opt_rewritten_function) {
+      cost_ = Cost::Invalid();
+      VLOG(1) << "Unable to rewrite function, candidate now " << ToString();
+    } else {
+      Function rewritten_function = opt_rewritten_function.value();
+      rewritten_function = Downcast<Function>(transform::InferTypeExpr(rewritten_function));
+      Map<String, ObjectRef> attrs;
+      // The extracted function must be marked as "Primitive" so we don't attempt to do
+      // any further processing within it.
+      attrs.Set(attr::kPrimitive, Integer(1));
+      Optional<String> opt_compiler = target_->GetAttr("compiler", Optional<String>());
+      if (opt_compiler) {
+        // Also include the target's "Compiler" attribute on the function so the correct BYOC
+        // codegen will take place during lowering.
+        attrs.Set(attr::kCompiler, opt_compiler.value());
+        // Make sure the kernel has a unique global name.
+        attrs.Set(tvm::attr::kGlobalSymbol, String(name_supply->Fresh({(std::string)rule_name_})));
+      }
+      function_ = WithAttrs(rewritten_function, std::move(attrs));
+      VLOG(1) << "Estimating cost of:\n" << PrettyPrint(function_);
+      cost_ = cost_estimator->CachedEstimate(function_, target_);
+      VLOG(1) << "Estimated cost, candidate now " << ToString();
+    }
   } else {
     VLOG(1) << "Reusing cached cost";
   }
   return cost_;
+}
+
+CandidateKernel::CandidateKernel(String rule_name, SubGraph sub_graph,
+                                 ObjectRef /* actually FusionSpec */ spec, Target target) {
+  auto node = runtime::make_object<CandidateKernelNode>();
+  node->rule_name_ = std::move(rule_name);
+  node->sub_graph_ = std::move(sub_graph);
+  node->spec_ = std::move(spec);
+  node->target_ = std::move(target);
+  // function default to null, set by EstimatedCost
+  // cost defaults to unknown, set by EstimatedCost
+  data_ = std::move(node);
 }
 
 bool CandidateKernel::MaybeUnionable(const CandidateKernel& that) const {
@@ -75,9 +121,9 @@ CandidateKernel CandidateKernel::DisjointUnion(const DataflowGraph& dataflow_gra
   ICHECK(!that->function_.defined());
   ICHECK(get()->cost_.is_unknown());
   ICHECK(that->cost_.is_unknown());
-  return CandidateKernel(
-      get()->rule_name_ + "+" + that->rule_name_, std::max(get()->priority_, that->priority_),
-      get()->sub_graph_.DisjointUnion(dataflow_graph, that->sub_graph_), get()->spec_);
+  return CandidateKernel(get()->rule_name_ + "+" + that->rule_name_,
+                         get()->sub_graph_.DisjointUnion(dataflow_graph, that->sub_graph_),
+                         get()->spec_);
 }
 
 /*static*/
