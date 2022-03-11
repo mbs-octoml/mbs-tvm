@@ -71,6 +71,12 @@ TensorRTBuilder::TensorRTBuilder(TensorRTLogger* logger,
 #endif
 }
 
+nvinfer1::DataType DLDataType2NVDataType(DLDataType data_type) {
+  ICHECK(data_type.code == kDLFloat && (data_type.bits == 16 || data_type.bits == 32))
+      << "Invalid input Tensor type. Only float16 and float32 are supported";
+  return (data_type.bits == 16) ? nvinfer1::DataType::kHALF : nvinfer1::DataType::kFLOAT;
+}
+
 void TensorRTBuilder::AddInput(int nid, uint32_t entry_id, const JSONGraphNode& node) {
   auto node_name = node.GetOpName();
   auto shapes = node.GetOpShape();
@@ -85,13 +91,7 @@ void TensorRTBuilder::AddInput(int nid, uint32_t entry_id, const JSONGraphNode& 
       shape.erase(shape.begin());
     }
     nvinfer1::Dims dims = VectorToTrtDims(shape);
-    ICHECK((dtypes[i].bits != 16 || dtypes[i].bits != 32))
-        << "Invalid input Tensor type. Float16 and Float32 are supported";
-
-    auto tensor_dtype =
-        (dtypes[i].bits == 16) ? nvinfer1::DataType::kHALF : nvinfer1::DataType::kFLOAT;
-
-    auto input_tensor = network_->addInput(name.c_str(), tensor_dtype, dims);
+    auto input_tensor = network_->addInput(name.c_str(), DLDataType2NVDataType(dtypes[i]), dims);
     node_output_map_[nid].push_back(TensorRTOpInput(input_tensor));
     network_input_names_.push_back(name);
     entry_id_map_[name] = entry_id + i;
@@ -154,12 +154,11 @@ void TensorRTBuilder::AddLayer(int nid, const JSONGraphNode& node) {
 
   // Get outputs.
   node_output_map_[nid] = {};
-  for (auto out : params.outputs) {
-    auto out_type = params.inputs.at(1).weight.type == params.inputs.at(0).tensor->getType()
-                        ? params.inputs.at(0).tensor->getType()
-                        : params.inputs.at(1).weight.type;
-    out->setType(out_type);
-
+  std::vector<DLDataType> dtype = node.GetOpDataType();
+  ICHECK_EQ(params.outputs.size(), dtype.size());
+  for (size_t i = 0; i < params.outputs.size(); ++i) {
+    auto out = params.outputs[i];
+    out->setType(DLDataType2NVDataType(dtype[i]));
     node_output_map_[nid].push_back(TensorRTOpInput(out));
   }
 }

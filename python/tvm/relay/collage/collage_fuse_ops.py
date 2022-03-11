@@ -55,7 +55,7 @@ def estimate_seconds(function, target):
 
         # Benchmark the module.
         vm = tvm.runtime.vm.VirtualMachine(exe, device)
-        benchmark_result = vm.benchmark(device, repeat=5, number=20, *args)
+        benchmark_result = vm.benchmark(device, *args, repeat=5, number=20)
 
         logging.info(benchmark_result)
         return benchmark_result.mean  # seconds

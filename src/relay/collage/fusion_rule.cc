@@ -23,10 +23,10 @@
  */
 
 #include "./fusion_rule.h"
-#include "./fusion_spec.h"
 
 #include <tvm/relay/transform.h>
 
+#include "./fusion_spec.h"
 #include "./utils.h"
 
 namespace tvm {
@@ -329,16 +329,12 @@ OpCallByKindFusionRule::OpCallByKindFusionRule(String rule_name) {
   data_ = std::move(node);
 }
 
-bool ByKindSimplePrimRule::Fires(const DataflowGraph& dataflow_graph,
-                                 const CandidateKernel& upstream,
-                                 const CandidateKernel& downstream) const {
-  return upstream->sub_graph_->kind_ <= upstream_kind_ &&
-         downstream->sub_graph_->kind_ <= downstream_kind_;
-}
-
-void PrimRuleResults::Add(const CandidateKernel& new_candidate) {
+void PrimRuleResults::Add(const DataflowGraph& dataflow_graph,
+                          const CandidateKernel& new_candidate) {
   if (seen.count(new_candidate->sub_graph_)) {
     VLOG(1) << "already seen candidate, ignoring";
+  } else if (!new_candidate->sub_graph_->IsValid(dataflow_graph, *config)) {
+    VLOG(1) << "candidate not valid, ignoring";
   } else {
     seen.emplace(new_candidate->sub_graph_);
     candidates_to_add.emplace_back(new_candidate);
@@ -372,6 +368,17 @@ bool PrimRuleResults::PrepareForNextRound() {
   return true;
 }
 
+bool ByKindSimplePrimRule::Fires(const DataflowGraph& dataflow_graph,
+                                 const CandidateKernel& upstream,
+                                 const CandidateKernel& downstream) const {
+  return upstream->sub_graph_->kind_ <= upstream_kind_ &&
+         downstream->sub_graph_->kind_ <= downstream_kind_;
+}
+
+std::string ByKindSimplePrimRule::ToString() const {
+  return KindToString(upstream_kind_) + "->" + KindToString(downstream_kind_);
+}
+
 void AllSimplePrimRules::AppendAllResults(const DataflowGraph& dataflow_graph,
                                           PrimRuleResults& results) const {
   for (size_t i = 0; i < results.current_candidates.size(); ++i) {
@@ -388,12 +395,28 @@ void AllSimplePrimRules::AppendAllResults(const DataflowGraph& dataflow_graph,
             VLOG(1) << "Fired " << simple_rule->prim_rule_name_ << " on " << upstream->ToString()
                     << " and " << downstream->ToString() << " to yield "
                     << new_candidate->ToString();
-            results.Add(new_candidate);
+            results.Add(dataflow_graph, new_candidate);
           }
         }
       }
     }
   }
+}
+
+std::string AllSimplePrimRules::ToString() const {
+  std::ostringstream os;
+  os << "AllSimplePrimRules(";
+  bool first = true;
+  for (const auto& simple : simple_prim_rules_) {
+    if (first) {
+      first = false;
+    } else {
+      os << ",";
+    }
+    os << simple->ToString();
+  }
+  os << ")";
+  return os.str();
 }
 
 void TupleArgPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
@@ -465,12 +488,14 @@ void TupleArgPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
           }
           VLOG(1) << "Fired tuple rule on {" << os.str() << "} to yield "
                   << new_candidate->ToString();
-          results.Add(new_candidate);
+          results.Add(dataflow_graph, new_candidate);
         }
       }
     }
   }
 }
+
+std::string TupleArgPrimRule::ToString() const { return "TupleArgPrimRule()"; }
 
 void ConstantPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
                                         PrimRuleResults& results) const {
@@ -489,20 +514,22 @@ void ConstantPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
       CandidateKernel new_candidate = base.DisjointUnion(dataflow_graph, new_const_candidate);
       VLOG(1) << "Fired const rule on " << new_const_candidate->ToString() << " and "
               << base->ToString() << " to yield " << new_candidate->ToString();
-      results.Add(new_candidate);
+      results.Add(dataflow_graph, new_candidate);
       results.Remove(base);
     }
   }
 }
+
+std::string ConstantPrimRule::ToString() const { return "ConstantPrimRule()"; }
 
 Array<CandidateKernel> CombineByPrimitivesFusionRuleNode::AllCandidateKernels(
     const DataflowGraph& dataflow_graph, const FusionSpec& spec) const {
   // We'll accumulate all the candidates here, starting with those from the sub-rule.
   // Once a candidate is added to this vector it is immutable.
   Array<CandidateKernel> initial_candidates = sub_rule_->AllCandidateKernels(dataflow_graph, spec);
-  PrimRuleResults rule_results;
+  PrimRuleResults rule_results(&config_);
   for (const auto& candidate : initial_candidates) {
-    rule_results.Add(candidate);
+    rule_results.Add(dataflow_graph, candidate);
   }
 
   // TODO(mbs): Hopelessly naive, needs indexing.
@@ -529,14 +556,26 @@ void CombineByPrimitivesFusionRuleNode::AppendBodyItems(std::vector<Doc>& body_i
   FusionRuleNode::AppendBodyItems(body_items);
   body_items.emplace_back();
   body_items.back() << "sub_rule=" << sub_rule_->ToDoc();
+  for (const auto& prim_rule : prim_rules_) {
+    body_items.emplace_back();
+    body_items.back() << "prim_rule=" << prim_rule->ToString();
+  }
+  body_items.emplace_back();
+  body_items.back() << "config=" << config_.ToString();
 }
 
 CombineByPrimitivesFusionRule::CombineByPrimitivesFusionRule(
-    String rule_name, FusionRule sub_rule, std::vector<std::unique_ptr<PrimRule>> prim_rules) {
+    String rule_name, FusionRule sub_rule, std::vector<std::unique_ptr<PrimRule>> prim_rules,
+    size_t max_max_depth_) {
   auto node = runtime::make_object<CombineByPrimitivesFusionRuleNode>();
   node->rule_name_ = std::move(rule_name);
   node->sub_rule_ = std::move(sub_rule);
   node->prim_rules_ = std::move(prim_rules);
+  node->config_.max_max_depth = max_max_depth_;
+  // The following two properties are not monotonic. Eg we have intermediate candidates
+  // with taps who's disjoint union is tap free.
+  node->config_.allow_taps = true;
+  node->config_.max_outputs = 0;
   data_ = std::move(node);
 }
 
