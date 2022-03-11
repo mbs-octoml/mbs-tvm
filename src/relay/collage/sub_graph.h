@@ -31,7 +31,7 @@
 
 #include "../ir/dataflow_matcher_impl.h"
 #include "../ir/indexed_graph.h"
-#include "index_set.h"
+#include "./index_set.h"
 
 namespace tvm {
 namespace relay {
@@ -72,6 +72,8 @@ struct SubGraphConfig {
    * \brief Maximum allowed maximum depth, or zero if no-limit.
    */
   size_t max_max_depth = 0;
+
+  std::string ToString() const;
 };
 
 using LabelledSubGraphMap = Map<String, ObjectRef /* actually SubGraph */>;

@@ -27,9 +27,10 @@
 
 #include <tvm/runtime/container/string.h>
 
-#include "cost.h"
-#include "cost_estimator.h"
-#include "sub_graph.h"
+#include "./cost.h"
+#include "./cost_estimator.h"
+#include "./sub_graph.h"
+#include "./name_supply.h"
 
 namespace tvm {
 namespace relay {
@@ -44,13 +45,8 @@ class CandidateKernelNode : public Object {
  public:
   CandidateKernelNode() = default;
 
-  /*! \brief Name of the fusion rule(s) which produced this candidate. */
+  /*! \brief Combination of all the fusion rule names which produced this candidate. */
   String rule_name_;
-
-  /*!
-   * \brief Priority of the fusion rule(s) which produced this candidate.
-   */
-  int priority_ = 0;
 
   /*! \brief The sub-graph of the overall expression matched by the fusion rule. */
   SubGraph sub_graph_;
@@ -61,12 +57,20 @@ class CandidateKernelNode : public Object {
   ObjectRef /* actually FusionSpec */ spec_;
 
   /*!
+   * \brief The target for which to compile the above function.
+   *
+   * Will be null for intermediate targets, and is only set once a candidate is to be
+   * specialized to a fixed target.
+   */
+  mutable Target target_;
+
+  /*!
    * \brief The Relay "Primitive" function which represents the above sub-graph,
    * including any additional attributes needed to guide lowering and codegen.
    *
-   * Initially null, filled in by the FusionSpec processing.
+   * Initially null, filled in by EstimateCost.
    */
-  Function function_;
+  mutable Function function_;
 
   /*!
    * \brief The cost of the kernel.
@@ -86,32 +90,19 @@ class CandidateKernelNode : public Object {
   std::string fusion_spec_name() const;
 
   /*!
-   * \brief Returns the target for compiling this candidate.
-   */
-  Target target() const;
-
-  /*!
    * \brief Return the estimated cost of the candidate kernel, using \p cost_estimator if
-   * the cost is not already known.
+   * the cost is not already known. Internally cached.
    */
-  Cost EstimatedCost(CostEstimator* cost_estimator) const;
+  Cost EstimatedCost(const DataflowGraph& dataflow_graph, CostEstimator* cost_estimator,
+                     NameSupply* name_supply) const;
 
   std::string ToString() const;
 };
 
 class CandidateKernel : public ObjectRef {
  public:
-  CandidateKernel(String rule_name, int priority, SubGraph sub_graph,
-                  ObjectRef /* actually FusionSpec */ spec, Function function = {}) {
-    auto node = runtime::make_object<CandidateKernelNode>();
-    node->rule_name_ = std::move(rule_name);
-    node->priority_ = priority;
-    node->sub_graph_ = std::move(sub_graph);
-    node->spec_ = std::move(spec);
-    node->function_ = std::move(function);
-    // cost defaults to unknown
-    data_ = std::move(node);
-  }
+  CandidateKernel(String rule_name, SubGraph sub_graph, ObjectRef /* actually FusionSpec */ spec,
+                  Target target = {});
 
   /*!
    * \brief Returns true if this and \p that candidate could be unioned. The result may not

@@ -306,8 +306,7 @@ the core Collage datatypes. All fusion rules implement the method:
 
 ```
 virtual Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                                   const FusionSpec& spec,
-                                                   NameSupply* name_supply) const;
+                                                   const FusionSpec& spec) const;
 ```
 
 The candidates are allowed to overlap, and ultimately it is the job of the Collage fusion searcher to find a selection
@@ -758,7 +757,7 @@ However:
   list. Consider replacing with `CollageFuseOps` in lightweight mode?
 - `Target`s can have a `"fusion_spec"` attribute to directly control fusion.
 - Indexing in `CombineByKindFusionRule` to avoid O(n^2) iteration over candidates.
-- Need to be dominator aware in `CombineByKindFusionRule` or is current naive approach of using `SubGraph::IsValid`
+- Need to be dominator aware in `CombineByPrimitivesFusionRule` or is current naive approach of using `SubGraph::IsValid`
   good enough to eliminate taps?
 - What's with the use of `OpPatternKinds` on dataflow edges in `FuseOps` and the special rule relabelling
   `kBroadcast` as `kElemwise` if input/output shapes match? Need to find examples.

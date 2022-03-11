@@ -27,7 +27,7 @@
 #include <tvm/relay/transform.h>
 
 #include "../transforms/pass_utils.h"
-#include "utils.h"
+#include "./utils.h"
 
 namespace tvm {
 namespace relay {
@@ -378,6 +378,15 @@ IndexSubst Rewriter::MakeIndexSubst(const DataflowGraph& new_dataflow_graph) con
 }
 
 }  // namespace
+
+std::string SubGraphConfig::ToString() const {
+  std::ostringstream os;
+  os << "{max_outputs=" << max_outputs;
+  os << ",allow_taps=" << allow_taps;
+  os << ",max_max_depth=" << max_max_depth;
+  os << "}";
+  return os.str();
+}
 
 std::pair<OpPatternKind, std::string> SubExprKindAndLabel(const Expr& sub_expr) {
   class Visitor : public ExprFunctor<std::pair<OpPatternKind, std::string>(const Expr&)> {

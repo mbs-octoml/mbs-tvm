@@ -22,11 +22,6 @@ import numpy as np
 from tvm._ffi.registry import register_func
 import logging
 
-make_tvm_fusion_spec = tvm._ffi.get_global_func("relay.collage.make_tvm_fusion_spec")
-make_op_predicate_byoc_spec = tvm._ffi.get_global_func("relay.collage.make_op_predicate_byoc_spec")
-make_labelled_dfpattern_fusion_rule = tvm._ffi.get_global_func("relay.collage.make_labelled_dfpattern_fusion_rule")
-make_pattern_byoc_spec = tvm._ffi.get_global_func("relay.collage.make_pattern_byoc_spec")
-
 
 def arg_for(type, device):
     """Returns a test argument for device of type"""
@@ -66,21 +61,21 @@ def estimate_seconds(function, target):
         return benchmark_result.mean  # seconds
 
 
-@register_func("tvm.relay.collage.make_fusion_spec")
-def make_fusion_spec(target):
-    compiler = target.attrs.get("compiler", "")
-    if compiler == "":
-        logging.info(f"No 'compiler' attribute for target {target}, assuming built-in TVM lowering/codegen")
-        return make_tvm_fusion_spec(target)
+make_op_predicate_byoc_fusion_rule = tvm._ffi.get_global_func("relay.collage.make_op_predicate_byoc_fusion_rule")
+make_labelled_dfpattern_fusion_rule = tvm._ffi.get_global_func("relay.collage.make_labelled_dfpattern_fusion_rule")
+make_pattern_byoc_fusion_rule = tvm._ffi.get_global_func("relay.collage.make_pattern_byoc_fusion_rule")
+
+
+@register_func("tvm.relay.collage.make_byoc_fusion_rule")
+def make_byoc_fusion_rule(compiler):
+    pattern_table = tvm.relay.op.contrib.get_pattern_table(compiler)
+    if pattern_table is None:
+        logging.info(
+            f"No pattern table for compiler {compiler}, assuming operator-predicate style BYOC lowering/codegen")
+        return make_op_predicate_byoc_fusion_rule(compiler)
     else:
-        pattern_table = tvm.relay.op.contrib.get_pattern_table(compiler)
-        if pattern_table is None:
-            logging.info(
-                f"No pattern table for compiler {compiler} in {target}, assuming operator-predicate style BYOC lowering/codegen")
-            return make_op_predicate_byoc_spec(target)
-        else:
-            logging.info(
-                f"Converting {len(pattern_table)} rules for {compiler} in {target} for use in pattern style BYOC lowering/codegen")
-            sub_rules = [make_labelled_dfpattern_fusion_rule(rule_name, dataflow_pattern, predicate) for
-                         rule_name, dataflow_pattern, predicate in pattern_table]
-            return make_pattern_byoc_spec(target, sub_rules)
+        logging.info(
+            f"Converting {len(pattern_table)} rules for {compiler} for use in pattern style BYOC lowering/codegen")
+        sub_rules = [make_labelled_dfpattern_fusion_rule(rule_name, dataflow_pattern, predicate) for
+                     rule_name, dataflow_pattern, predicate in pattern_table]
+        return make_pattern_byoc_fusion_rule(compiler, sub_rules)

@@ -29,9 +29,8 @@
 #include <tvm/relay/expr.h>
 
 #include "../../printer/doc.h"
-#include "candidate_kernel.h"
-#include "name_supply.h"
-#include "sub_graph.h"
+#include "./candidate_kernel.h"
+#include "./sub_graph.h"
 
 namespace tvm {
 namespace relay {
@@ -103,6 +102,9 @@ bool DefaultPatternPredicate(const Expr& matched_sub_expr);
  *    though: i) all combinations are found, ii) the starting set of candidates can be provided
  *    by any other rule (ie not just \p OpCallByKindFusionRule), and iii) we rely on \p SubGraph
  *    validity checking to weed out infeasible candidates.
+ *  - \p OnlyValidFusionRule: Ignore candidates who's sub-graphs are invalid w.r.t. a given
+ *    \p SubGraphConfig. This can be used to limit the maximum candidate depth, the number
+ *    of independent outputs, whether intermediate 'taps' are allowed, and so on.
  *
  * Though not yet implemented, we'd like to allow a combinator rule which will union candidate
  * based on their 'anchor' operators. This can be used to implement 'vertical' and 'horizontal'
@@ -178,26 +180,14 @@ class FusionRuleNode : public Object {
    */
   String rule_name_;
 
-  /*!
-   * \brief Global priority of this rule w.r.t. all others, including for other targets.
-   * Ties between kernels with indistinguishable costs are broken by priority, where higher
-   * wins.
-   */
-  int priority_ = 0;
-
-  void VisitAttrs(AttrVisitor* v) {
-    v->Visit("rule_name", &rule_name_);
-    v->Visit("priority", &priority_);
-  }
+  void VisitAttrs(AttrVisitor* v) { v->Visit("rule_name", &rule_name_); }
 
   /*!
    * \brief Returns all the possible candidate kernels for overall expression corresponding to
-   * \p dataflow_graph for target implied by \p spec. The candidates will have unknown cost
-   * until it is explicitly estimated.
+   * \p dataflow_graph. The candidates will have unknown target, function and cost.
    */
   virtual Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                                     const FusionSpec& spec,
-                                                     NameSupply* name_supply) const;
+                                                     const FusionSpec& spec) const;
 
   std::string ToString() const;
   Doc ToDoc() const;
@@ -207,13 +197,13 @@ class FusionRuleNode : public Object {
 
  public:
   static constexpr const char* _type_key = "relay.collage.FusionRule";
-  static constexpr const uint32_t _type_child_slots = 7;
+  static constexpr const uint32_t _type_child_slots = 8;
   TVM_DECLARE_BASE_OBJECT_INFO(FusionRuleNode, Object);
 };
 
 class FusionRule : public ObjectRef {
  public:
-  FusionRule(String rule_name, int priority);
+  FusionRule(String rule_name);
 
   TVM_DEFINE_OBJECT_REF_METHODS(FusionRule, ObjectRef, FusionRuleNode);
 };
@@ -235,8 +225,7 @@ class DFPatternFusionRuleNode : public FusionRuleNode {
   TPatternPredicate predicate_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec,
-                                             NameSupply* name_supply) const override;
+                                             const FusionSpec& spec) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -246,7 +235,7 @@ class DFPatternFusionRuleNode : public FusionRuleNode {
 
 class DFPatternFusionRule : public FusionRule {
  public:
-  DFPatternFusionRule(String rule_name, int priority, DFPattern pattern,
+  DFPatternFusionRule(String rule_name, DFPattern pattern,
                       TPatternPredicate predicate = DefaultPatternPredicate);
 
   TVM_DEFINE_OBJECT_REF_METHODS(DFPatternFusionRule, FusionRule, DFPatternFusionRuleNode);
@@ -263,8 +252,7 @@ class OpPredicateFusionRuleNode : public FusionRuleNode {
   String attribute_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec,
-                                             NameSupply* name_supply) const override;
+                                             const FusionSpec& spec) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -291,7 +279,7 @@ class OpPredicateFusionRuleNode : public FusionRuleNode {
 
 class OpPredicateFusionRule : public FusionRule {
  public:
-  OpPredicateFusionRule(String rule_name, int priority, String attribute);
+  OpPredicateFusionRule(String rule_name, String attribute);
 
   TVM_DEFINE_OBJECT_REF_METHODS(OpPredicateFusionRule, FusionRule, OpPredicateFusionRuleNode);
 };
@@ -309,8 +297,7 @@ class CompositeFusionRuleNode : public FusionRuleNode {
   FusionRule sub_rule_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec,
-                                             NameSupply* name_supply) const override;
+                                             const FusionSpec& spec) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -320,7 +307,7 @@ class CompositeFusionRuleNode : public FusionRuleNode {
 
 class CompositeFusionRule : public FusionRule {
  public:
-  CompositeFusionRule(String rule_name, int priority, FusionRule sub_rule);
+  CompositeFusionRule(String rule_name, FusionRule sub_rule);
 
   TVM_DEFINE_OBJECT_REF_METHODS(CompositeFusionRule, FusionRule, CompositeFusionRuleNode);
 };
@@ -333,8 +320,7 @@ class UnionFusionRuleNode : public FusionRuleNode {
   Array<FusionRule> sub_rules_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec,
-                                             NameSupply* name_supply) const override;
+                                             const FusionSpec& spec) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -344,7 +330,7 @@ class UnionFusionRuleNode : public FusionRuleNode {
 
 class UnionFusionRule : public FusionRule {
  public:
-  UnionFusionRule(String rule_name, int priority, Array<FusionRule> sub_rules);
+  UnionFusionRule(String rule_name, Array<FusionRule> sub_rules);
 
   TVM_DEFINE_OBJECT_REF_METHODS(UnionFusionRule, FusionRule, UnionFusionRuleNode)
 };
@@ -358,8 +344,7 @@ class MaxCoalesceFusionRuleNode : public FusionRuleNode {
   FusionRule sub_rule_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec,
-                                             NameSupply* name_supply) const override;
+                                             const FusionSpec& spec) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -369,7 +354,7 @@ class MaxCoalesceFusionRuleNode : public FusionRuleNode {
 
 class MaxCoalesceFusionRule : public FusionRule {
  public:
-  MaxCoalesceFusionRule(String rule_name, int priority, FusionRule sub_rule);
+  MaxCoalesceFusionRule(String rule_name, FusionRule sub_rule);
 
   TVM_DEFINE_OBJECT_REF_METHODS(MaxCoalesceFusionRule, FusionRule, MaxCoalesceFusionRuleNode);
 };
@@ -383,8 +368,7 @@ class MaxCoalesceFusionRule : public FusionRule {
 class OpCallByKindFusionRuleNode : public FusionRuleNode {
  public:
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec,
-                                             NameSupply* name_supply) const override;
+                                             const FusionSpec& spec) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -394,7 +378,7 @@ class OpCallByKindFusionRuleNode : public FusionRuleNode {
 
 class OpCallByKindFusionRule : public FusionRule {
  public:
-  OpCallByKindFusionRule(String rule_name, int priority);
+  OpCallByKindFusionRule(String rule_name);
 
   TVM_DEFINE_OBJECT_REF_METHODS(OpCallByKindFusionRule, FusionRule, OpCallByKindFusionRuleNode);
 };
@@ -552,8 +536,7 @@ class CombineByPrimitivesFusionRuleNode : public FusionRuleNode {
   std::vector<std::unique_ptr<PrimRule>> prim_rules_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             const FusionSpec& spec,
-                                             NameSupply* name_supply) const override;
+                                             const FusionSpec& spec) const override;
 
   void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
@@ -564,7 +547,7 @@ class CombineByPrimitivesFusionRuleNode : public FusionRuleNode {
 
 class CombineByPrimitivesFusionRule : public FusionRule {
  public:
-  CombineByPrimitivesFusionRule(String rule_name, int priority, FusionRule sub_rule,
+  CombineByPrimitivesFusionRule(String rule_name, FusionRule sub_rule,
                                 std::vector<std::unique_ptr<PrimRule>> prim_rules);
 
   TVM_DEFINE_OBJECT_REF_METHODS(CombineByPrimitivesFusionRule, FusionRule,
@@ -572,75 +555,30 @@ class CombineByPrimitivesFusionRule : public FusionRule {
 };
 
 /*!
- * \brief Type of functions for checking and optionally rewriting candidate fused functions
- * before they proceed to lowering and codegen. The argument is the function extracted from
- * the overall expression to represent the kernel. The result is one of:
- *  - nullptr if the candidate should be rejected, eg because it has an unsupported shape.
- *    It's often easier to reject candidates when looking at the overall sub-graph rather
- *    than trying to make the selecting patterns exact.
- *  - The argument, indicating the candidate should proceed as is.
- *  - A new function, indicating we wish to rewrite the sub-graph before proceeding. This can be
- *    used to, eg, rewrite to a target-specific operator so as to simplify downstream processing.
+ * \brief Fusion rules which keeps only candidates from the sub-rule with sub-groups valid
+ * w.r.t. the given \p SubGraphConfig.
  */
-using TRewriteSubGraphFunc = TypedPackedFunc<Optional<Function>(const Function& function)>;
-
-/*!
- * \brief The default rewriting function. Simply returns its argument.
- */
-Optional<Function> DefaultRewriteSubGraphFunc(const Function& function);
-
-/*!
- * \brief Pairs a \p FusionRule with the \p Target it is intended for. We also allow the
- * each candidate kernel function to be rewritten before the candidate is used for estimating
- * kernel latency or included in the final 'parititoned' Relay expression.
- */
-class FusionSpecNode : public Object {
+class OnlyValidFusionRuleNode : public FusionRuleNode {
  public:
-  /*!
-   * \brief Specification name to distinguish this spec from all others. Typcially
-   * the BYOC compiler name or "tvm".
-   *
-   */
-  String spec_name_;
-  /*!
-   * \brief The target for all candidate kernels.
-   */
-  Target target_;
-
-  /*!
-   * \brief The pattern rule to use to gather candidate kernels.
-   */
-  FusionRule rule_;
-
-  /*!
-   * \brief A function for processing the candidate kernel functions before proceeding.
-   */
-  TRewriteSubGraphFunc fused_result_func_ = DefaultRewriteSubGraphFunc;
-
-  /*!
-   * \brief Configuration for checking which sub-graphs are considered valid.
-   */
+  FusionRule sub_rule_;
   SubGraphConfig config_;
 
   Array<CandidateKernel> AllCandidateKernels(const DataflowGraph& dataflow_graph,
-                                             NameSupply* name_supply) const;
+                                             const FusionSpec& spec) const override;
 
-  std::string ToString() const;
+  void AppendBodyItems(std::vector<Doc>& body_items) const override;
 
-  static constexpr const char* _type_key = "relay.collage.FusionSpec";
-  TVM_DECLARE_FINAL_OBJECT_INFO(FusionSpecNode, Object);
-};
-
-class FusionSpec : public ObjectRef {
  public:
-  FusionSpec(String spec_name, Target target, FusionRule rule, SubGraphConfig config,
-             TRewriteSubGraphFunc fused_result_func = DefaultRewriteSubGraphFunc);
-
-  TVM_DEFINE_OBJECT_REF_METHODS(FusionSpec, ObjectRef, FusionSpecNode);
+  static constexpr const char* _type_key = "relay.collage.OnlyValidFusionRule";
+  TVM_DECLARE_FINAL_OBJECT_INFO(OnlyValidFusionRuleNode, FusionRuleNode);
 };
 
-FusionRule MakeDFPatternFusionRule(String rule_name, DFPattern dataflow_pattern,
-                                   runtime::PackedFunc predicate, Target target);
+class OnlyValidFusionRule : public FusionRule {
+ public:
+  OnlyValidFusionRule(String rule_name, FusionRule sub_rule, const SubGraphConfig& config);
+
+  TVM_DEFINE_OBJECT_REF_METHODS(OnlyValidFusionRule, FusionRule, OnlyValidFusionRuleNode);
+};
 
 }  // namespace collage
 }  // namespace relay
