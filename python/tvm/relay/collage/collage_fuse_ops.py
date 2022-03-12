@@ -50,7 +50,6 @@ def estimate_seconds(function, target):
 
         # Place that in a module and compile.
         mod = tvm.IRModule.from_expr(main)
-        logging.info(f"Measuring overall module:\n{mod}")
         exe = tvm.relay.vm.compile(mod, target)
 
         # Benchmark the module.

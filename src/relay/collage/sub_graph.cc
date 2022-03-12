@@ -563,8 +563,6 @@ bool SubGraphNode::IsValid(const DataflowGraph& dataflow_graph,
   const DataflowGraph::Node* basic_block = nullptr;
   for (PostDfsIndex index : inside_) {
     auto node = dataflow_graph.index_to_node(index);
-    VLOG(1) << "index " << index << " has basic block "
-            << (node->basic_block_ ? std::to_string(node->basic_block_->index_) : "null");
     if (basic_block == nullptr) {
       basic_block = node->basic_block_;
     }

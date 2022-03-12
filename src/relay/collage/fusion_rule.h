@@ -389,15 +389,35 @@ class OpCallByKindFusionRule : public FusionRule {
  */
 struct PrimRuleResults {
   explicit PrimRuleResults(const SubGraphConfig* config) : config(config) {}
+
+  /*! \brief Schedule \p new_candidate for addition before the next round (unless it is not valid).
+   */
   void Add(const DataflowGraph& dataflow_graph, const CandidateKernel& new_candidate);
+  /*! \brief Schedule \p old_candidate for removal before the next round. */
   void Remove(const CandidateKernel& old_candidate);
+
+  /*!
+   * \brief Update \p current_candidates and \p first_new_index. Return false if no
+   * new candidates were added, in which case we have reached a fixed point.
+   */
   bool PrepareForNextRound();
 
+  /*! \brief Config for pruning out new candidates. */
   const SubGraphConfig* config;
+  /*!
+   * \brief The number of candidates at the start of the current round. This can be used
+   * to avoid considering candidates or candidate combinations which have already been
+   * considered in an earlier round.
+   */
+  size_t first_new_index;
+  /*! \brief Candidates gathered in previous rounds. */
   std::vector<CandidateKernel> current_candidates;
+  /*! \brief New candidates gathered in the current round. */
   std::vector<CandidateKernel> candidates_to_add;
+  /*! \brief Existing candidates to remove before starting the next round. */
   std::vector<CandidateKernel> candidates_to_remove;
-  std::unordered_set<SubGraph, SubGraphHash, SubGraphEqual> seen;
+  /*! \brief Which candidates have been seen so far and should not be added again. */
+  std::unordered_set<CandidateKernel, CandidateKernelHash, CandidateKernelEquals> seen;
 };
 
 /*!
@@ -434,7 +454,6 @@ class ByKindSimplePrimRule : public SimplePrimRule {
   bool Fires(const DataflowGraph& dataflow_graph, const CandidateKernel& upstream,
              const CandidateKernel& downstream) const override;
   std::string ToString() const override;
-
 
   OpPatternKind upstream_kind_;
   OpPatternKind downstream_kind_;

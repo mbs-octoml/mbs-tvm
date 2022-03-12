@@ -331,18 +331,18 @@ OpCallByKindFusionRule::OpCallByKindFusionRule(String rule_name) {
 
 void PrimRuleResults::Add(const DataflowGraph& dataflow_graph,
                           const CandidateKernel& new_candidate) {
-  if (seen.count(new_candidate->sub_graph_)) {
+  if (seen.count(new_candidate)) {
     VLOG(1) << "already seen candidate, ignoring";
   } else if (!new_candidate->sub_graph_->IsValid(dataflow_graph, *config)) {
     VLOG(1) << "candidate not valid, ignoring";
   } else {
-    seen.emplace(new_candidate->sub_graph_);
+    seen.emplace(new_candidate);
     candidates_to_add.emplace_back(new_candidate);
   }
 }
 
 void PrimRuleResults::Remove(const CandidateKernel& old_candidate) {
-  ICHECK(seen.count(old_candidate->sub_graph_));
+  ICHECK(seen.count(old_candidate));
   candidates_to_remove.emplace_back(old_candidate);
 }
 
@@ -355,6 +355,7 @@ bool PrimRuleResults::PrepareForNextRound() {
   }
   candidates_to_remove.clear();
   VLOG(1) << "removed " << init_size - current_candidates.size() << " candidates";
+  first_new_index = current_candidates.size();
   if (candidates_to_add.empty()) {
     // We've reached a fixed point and can stop.
     VLOG(1) << "no new candidates, stopping search";
@@ -381,9 +382,13 @@ std::string ByKindSimplePrimRule::ToString() const {
 
 void AllSimplePrimRules::AppendAllResults(const DataflowGraph& dataflow_graph,
                                           PrimRuleResults& results) const {
+  // TODO(mbs): Build index.
   for (size_t i = 0; i < results.current_candidates.size(); ++i) {
     CandidateKernel upstream = results.current_candidates[i];
-    for (size_t j = 0; j < results.current_candidates.size(); ++j) {
+    // We already explored the cross-product of candidates [0, first_new_index), so don't
+    // do it again.
+    size_t start_j = i < results.first_new_index ? results.first_new_index : 0;
+    for (size_t j = start_j; j < results.current_candidates.size(); ++j) {
       if (i == j) {
         continue;
       }
@@ -421,6 +426,7 @@ std::string AllSimplePrimRules::ToString() const {
 
 void TupleArgPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
                                         PrimRuleResults& results) const {
+  // TODO(mbs): Build index.
   // The two-step I -> tuple -> I rule.
   for (size_t i = 0; i < results.current_candidates.size(); ++i) {
     CandidateKernel tuple_consumer = results.current_candidates[i];
@@ -444,7 +450,10 @@ void TupleArgPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
       // For each tuple field...
       for (auto* tuple_field_dataflow_node : tuple_dataflow_node->inputs_) {
         std::vector<CandidateKernel> to_appends;
-        for (size_t j = 0; j < results.current_candidates.size(); ++j) {
+        // We already explored the cross-product of candidates [0, first_new_index), so don't
+        // do it again.
+        size_t start_j = i < results.first_new_index ? results.first_new_index : 0;
+        for (size_t j = start_j; j < results.current_candidates.size(); ++j) {
           if (i == j) {
             continue;
           }
@@ -499,12 +508,13 @@ std::string TupleArgPrimRule::ToString() const { return "TupleArgPrimRule()"; }
 
 void ConstantPrimRule::AppendAllResults(const DataflowGraph& dataflow_graph,
                                         PrimRuleResults& results) const {
-  for (size_t i = 0; i < results.current_candidates.size(); ++i) {
+  // We already explored [0, first_new_index), so don't do it again.
+  for (size_t i = results.first_new_index; i < results.current_candidates.size(); ++i) {
     CandidateKernel base = results.current_candidates[i];
     IndexSet new_constants(dataflow_graph.size());
     for (PostDfsIndex index : base->sub_graph_->input_) {
       auto node = dataflow_graph.index_to_node(index);
-      if (const auto* constant_node = node->ref().as<ConstantNode>()) {
+      if (node->ref().as<ConstantNode>()) {
         new_constants.Add(index);
       }
     }
@@ -532,7 +542,6 @@ Array<CandidateKernel> CombineByPrimitivesFusionRuleNode::AllCandidateKernels(
     rule_results.Add(dataflow_graph, candidate);
   }
 
-  // TODO(mbs): Hopelessly naive, needs indexing.
   while (rule_results.PrepareForNextRound()) {
     VLOG(1) << "looking for fusion opportunities over " << rule_results.current_candidates.size()
             << " existing candidates";
