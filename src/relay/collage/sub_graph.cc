@@ -261,9 +261,9 @@ class Extractor : public ExprMutator {
    * Otherwise return the variable to represent it. Should be called only on inputs
    * to nodes which are inside the sub-graph.
    */
-  Expr VarOrExpr(const Expr& expr) {
+  Expr VisitExpr(const Expr& expr) final {
     if (inside(expr)) {
-      return VisitExpr(expr);
+      return ExprMutator::VisitExpr(expr);
     } else if (CanInline(expr)) {
       // Implicitly include inlinable input sub-expressions.
       return expr;
@@ -272,7 +272,8 @@ class Extractor : public ExprMutator {
     }
   }
 
-  Expr VisitExpr_(const CallNode* call_node) override {
+#if 0
+  Expr VisitExpr_(const CallNode* call_node) final {
     auto call = GetRef<Call>(call_node);
     ICHECK(inside(call));
     Expr new_op = VarOrExpr(call_node->op);
@@ -282,6 +283,7 @@ class Extractor : public ExprMutator {
     }
     return WithFields(call, new_op, std::move(new_args));
   }
+#endif
 
   Expr VisitExpr_(const FunctionNode* function_node) override {
     if (function_node->HasNonzeroAttr(attr::kPrimitive)) {

@@ -38,9 +38,9 @@ def is_supported_trt_dtype(args):
     ret: bool
         True if supported, False if not.
     """
-    if any([x.checked_type.dtype in supported_types for x in args]):
-        logger.info("Only float32 and float16 inputs are supported for TensorRT BYOC.")
+    if all([x.checked_type.dtype in supported_types for x in args]):
         return True
+    logger.info("Only float32 and float16 inputs are supported for TensorRT BYOC.")
     return False
 
 
