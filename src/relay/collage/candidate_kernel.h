@@ -29,8 +29,8 @@
 
 #include "./cost.h"
 #include "./cost_estimator.h"
-#include "./sub_graph.h"
 #include "./name_supply.h"
+#include "./sub_graph.h"
 
 namespace tvm {
 namespace relay {
@@ -131,6 +131,18 @@ class CandidateKernel : public ObjectRef {
                                 std::vector<CandidateKernel> candidates);
 
   TVM_DEFINE_OBJECT_REF_METHODS(CandidateKernel, ObjectRef, CandidateKernelNode);
+};
+
+struct CandidateKernelHash {
+  size_t operator()(const CandidateKernel& candidate) const {
+    return candidate->sub_graph_->hash();
+  }
+};
+
+struct CandidateKernelEquals {
+  bool operator()(const CandidateKernel& left, const CandidateKernel& right) const {
+    return *left->sub_graph_.get() == *right->sub_graph_.get();
+  }
 };
 
 }  // namespace collage
