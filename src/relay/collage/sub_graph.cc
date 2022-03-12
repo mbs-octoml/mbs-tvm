@@ -82,7 +82,7 @@ class Extractor : public ExprMutator {
    */
   void Extract() {
     ICHECK(!sub_graph_->IsEmpty());
-    VLOG(1) << "Extracting " << sub_graph_->ToString();
+    VLOG(2) << "Extracting " << sub_graph_->ToString();
 
     //  In reverse dataflow order...
     for (PostDfsIndex i = dataflow_graph_->size(); i > 0; --i) {
@@ -91,7 +91,7 @@ class Extractor : public ExprMutator {
         // Node is outside sub-graph.
         continue;
       }
-      VLOG(1) << "index " << index;
+      VLOG(2) << "index " << index;
       auto node = dataflow_graph_->index_to_node(index);
       if (sub_graph_->exit_[node->index_] || node->is_external_ || memo_.count(node->ref()) == 0) {
         // This sub-expression is:
@@ -100,7 +100,7 @@ class Extractor : public ExprMutator {
         //    output from a downstream sub-expression).
         //  - not yet visited, in which case we must evaluate it for its side effects.
         Expr output = VisitExpr(GetRef<Expr>(node->node_ref_));
-        VLOG(1) << "index " << index << " added as output:\n"
+        VLOG(2) << "index " << index << " added as output:\n"
                 << PrettyPrint(output) << "\nat " << outputs_.size();
         expr_to_output_index_.emplace(node->node_ref_, outputs_.size());
         outputs_.emplace_back(std::move(output));
@@ -174,7 +174,7 @@ class Extractor : public ExprMutator {
     for (const auto& kv : expr_to_output_index_) {
       Expr expr = num_outputs_ > 1 ? static_cast<Expr>(TupleGetItem(call_, kv.second))
                                    : static_cast<Expr>(call_);
-      VLOG(1) << "output " << dataflow_graph_->item_to_node(kv.first)->index_ << " is at index "
+      VLOG(2) << "output " << dataflow_graph_->item_to_node(kv.first)->index_ << " is at index "
               << kv.second << " (of " << num_outputs_ << " outputs)";
       output_substitution_.emplace(kv.first, std::move(expr));
     }
@@ -215,7 +215,7 @@ class Extractor : public ExprMutator {
  private:
   /*! \brief Returns a map from original index to new index for each node inside the sub-graph. */
   IndexSubst MakeIndexSubst(const DataflowGraph& new_dataflow_graph) const {
-    VLOG(1) << "building extractor substitution";
+    VLOG(2) << "building extractor substitution";
     IndexSubst subst;
     for (PostDfsIndex index : sub_graph_->inside_) {
       auto orig_node = dataflow_graph_->index_to_node(index);
@@ -223,7 +223,7 @@ class Extractor : public ExprMutator {
       auto itr = memo_.find(orig_node->ref());
       ICHECK(itr != memo_.end());
       auto new_node = new_dataflow_graph.item_to_node(itr->second);
-      VLOG(1) << orig_node->index_ << " |-> " << new_node->index_;
+      VLOG(2) << orig_node->index_ << " |-> " << new_node->index_;
       subst.emplace(orig_node->index_, new_node->index_);
     }
     return subst;
@@ -364,13 +364,13 @@ Expr Rewriter::VisitExpr(const Expr& expr) {
 
 IndexSubst Rewriter::MakeIndexSubst(const DataflowGraph& new_dataflow_graph) const {
   IndexSubst subst;
-  VLOG(1) << "building rewriter substitution";
+  VLOG(2) << "building rewriter substitution";
   for (PostDfsIndex index = 0; index < extractor_->dataflow_graph().size(); ++index) {
     auto orig_node = extractor_->dataflow_graph().index_to_node(index);
     auto itr = memo_.find(orig_node->ref());
     if (itr != memo_.end()) {
       auto new_node = new_dataflow_graph.item_to_node(itr->second);
-      VLOG(1) << orig_node->index_ << " |-> " << new_node->index_;
+      VLOG(2) << orig_node->index_ << " |-> " << new_node->index_;
       subst.emplace(orig_node->index_, new_node->index_);
     }
   }
