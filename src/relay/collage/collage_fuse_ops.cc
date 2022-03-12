@@ -195,15 +195,24 @@ class Partitioner {
       if (next_index >= dataflow_graph_->size()) {
         // The entire expression has been explored. Collect the candidates on the optimal path.
         VLOG(1) << "Finished search, recovering best candidates";
+        VLOG(1) << "----------------------------------------------------------------------";
         std::vector<CandidateKernel> best_candidates;
-        while (curr_state != nullptr) {
-          if (curr_state->best_candidate_kernel_.defined()) {
-            VLOG(1) << "Including best candidate "
-                    << curr_state->best_candidate_kernel_->ToString();
-            best_candidates.emplace_back(curr_state->best_candidate_kernel_);
-          }
+        while (curr_state != init_state) {
+          CandidateKernel candidate = curr_state->best_candidate_kernel_;
           curr_state = curr_state->pred_state_;
+          ICHECK(curr_state != nullptr);
+          next_index = curr_state->covered_.FirstOutsideIndex();
+          ICHECK_LT(next_index, dataflow_graph_->size());
+          if (candidate.defined()) {
+            VLOG(1) << "Best candidate " << candidate->ToString();
+            best_candidates.emplace_back(candidate);
+          } else {
+            Expr sub_expr = dataflow_graph_->index_to_node(next_index)->ref();
+            VLOG(1) << "VM will execute index " << next_index << " for sub-expression "
+                    << SubExprKindAndLabel(sub_expr).second;
+          }
         }
+        VLOG(1) << "----------------------------------------------------------------------";
         return CandidateKernel::ParallelPartition(std::move(dataflow_graph_), std::move(expr),
                                                   std::move(best_candidates));
       }
