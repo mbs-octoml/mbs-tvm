@@ -272,19 +272,6 @@ class Extractor : public ExprMutator {
     }
   }
 
-#if 0
-  Expr VisitExpr_(const CallNode* call_node) final {
-    auto call = GetRef<Call>(call_node);
-    ICHECK(inside(call));
-    Expr new_op = VarOrExpr(call_node->op);
-    Array<Expr> new_args;
-    for (const auto& arg : call_node->args) {
-      new_args.push_back(VarOrExpr(arg));
-    }
-    return WithFields(call, new_op, std::move(new_args));
-  }
-#endif
-
   Expr VisitExpr_(const FunctionNode* function_node) override {
     if (function_node->HasNonzeroAttr(attr::kPrimitive)) {
       return GetRef<Function>(function_node);
