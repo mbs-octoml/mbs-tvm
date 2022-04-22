@@ -2,6 +2,7 @@ from enum import Enum
 from collage.measurer.base import setup_mod_inputs
 import tvm
 from tvm import relay
+import tvm.relay.testing
 from tvm.contrib import graph_executor as runtime
 from collage.measurer.base import (
             NUM_MEASUREMENTS_PER_REPEAT, 

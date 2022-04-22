@@ -42,13 +42,12 @@ def measure(ftimer, target, *args):
     # Dummy run to check whether it runs correctly e.g., segfault due to large workspace
     import sys
 
-    try:
-        ftimer(*args)
-    except Exception as E:
-        #printe("It errors out when measuring; likely during op measurement")
-        printe(E)
-        print(sys.exc_info()[0])
-        return sys.maxsize, 0
+#    try:
+#    ftimer(*args)
+#    except Exception as E:
+#        print(E)
+#        print(sys.exc_info()[0])
+#        return sys.maxsize, 0
 
     # Warm-up Phase: Run without measurement
     # TimeEvaluator itself come with the warmup,

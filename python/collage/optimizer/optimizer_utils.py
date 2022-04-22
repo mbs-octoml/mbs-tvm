@@ -1,21 +1,23 @@
 import tvm
 from collage.utils import (is_var_node)
 from collage.utils import printe
-from collage.analysis.visualize import visualize_backend_placement
 import os
 import datetime
 
 DATA_NAME_HINTS = ['data', 'input', 'x']
 
+
 def log_matched_ops_by_method(log_path, matches):
     with open(log_path, 'w') as f:
         f.write("Matched operators (in post-dfs-order, from the root of comp graph to the last node)\n")
         for anno in matches:
-            f.write(anno+"\n")
+            f.write(anno + "\n")
+
 
 @tvm._ffi.register_func("collage.optimizer.visualize_expr")
 def visualize_expr(expr, file_name):
-    visualize_backend_placement(expr, file_name)
+    pass
+
 
 def print_ir(mod, info, is_before):
     """Print the name of the pass, the IR, only before passes execute."""
@@ -26,14 +28,9 @@ def print_ir(mod, info, is_before):
     # if info.name == "AnnotateTargetFunc" or info.name == "MergeCompilerRegions" or info.name == "PartitionGraph":
     if is_before:
         printe("Running pass: {}", info.name)
-        # printe(repr(mod["main"]))
-        visualize_backend_placement(mod["main"], info.name+"_before")
-    #print(mod)
     else:
         printe("Done pass: {}", info.name)
-        # If this is FuseOps, the module doesn't have "main" somehow.
-        # if info.name != "FuseOps":
-        visualize_backend_placement(mod["main"], info.name + "_after")
+
 
 def is_data_node(expr):
     is_data_var = False
@@ -43,11 +40,13 @@ def is_data_node(expr):
             break
     return is_data_var
 
+
 def is_data_var_node(expr):
     if is_var_node(expr) and is_data_node(expr):
         return True
 
     return False
+
 
 # def get_next_expr_after_match(relay_expr, prev_relay_expr, pattern, tmp_memo):
 #     target_node = []
@@ -104,7 +103,7 @@ def get_pattern_len(pattern):
     if type(pattern) == tvm.relay.dataflow_pattern.CallPattern:
         for child in pattern.args:
             length = max(length, get_pattern_len(child))
-        length +=1
+        length += 1
     elif type(pattern) == tvm.relay.dataflow_pattern.TupleGetItemPattern:
         length = get_pattern_len(pattern.tuple)
         length += 1
@@ -114,6 +113,7 @@ def get_pattern_len(pattern):
         length += 1
 
     return length
+
 
 def print_matching_final(comp_graph, loc2match):
     idx = -1
@@ -133,6 +133,7 @@ def print_matching_final(comp_graph, loc2match):
             print(f"({op_name}, {op_cost:.2g})")
     else:
         raise Exception('Final matching does not exist.')
+
 
 def print_matching_debug(comp_graph, loc2match):
     for idx in range(len(comp_graph._nodes)):

@@ -39,9 +39,12 @@ namespace tvm {
 namespace runtime {
 namespace contrib {
 
-TensorRTOpConverter::TensorRTOpConverter(const std::vector<TensorRTInputType>& input_types,
+TensorRTOpConverter::TensorRTOpConverter(std::string op_name,
+                                         const std::vector<TensorRTInputType>& input_types,
                                          bool variable_input_count)
-    : input_types(input_types), variable_input_count(variable_input_count) {}
+    : op_name(std::move(op_name)),
+      input_types(input_types),
+      variable_input_count(variable_input_count) {}
 
 nvinfer1::ITensor* TensorRTOpConverter::Reshape(TensorRTOpConverterParams* params,
                                                 nvinfer1::ITensor* input,
@@ -156,9 +159,8 @@ void TensorRTOpConverter::GetPadding3D(const std::vector<std::string>& padding,
 
 class ActivationOpConverter : public TensorRTOpConverter {
  public:
-  ActivationOpConverter() : TensorRTOpConverter({kTensor}) {}
+  ActivationOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~ActivationOpConverter() = default;
-
 
   void Convert(TensorRTOpConverterParams* params) const {
     static const std::unordered_map<std::string, nvinfer1::ActivationType> op_map = {
@@ -170,17 +172,17 @@ class ActivationOpConverter : public TensorRTOpConverter {
       {"nn.leaky_relu", nvinfer1::ActivationType::kLEAKY_RELU},
 #endif
     };
-    auto it = op_map.find(params->op_name);
-    ICHECK(it != op_map.end()) << "Unsupported activation type " << params->op_name;
+    auto it = op_map.find(op_name);
+    ICHECK(it != op_map.end()) << "Unsupported activation type " << op_name;
     nvinfer1::IActivationLayer* act_layer =
         params->network->addActivation(*params->inputs.at(0).tensor, it->second);
 #if TRT_VERSION_GE(5, 1, 5)
-    if (params->op_name == "clip") {
+    if (op_name == "clip") {
       float a_min = std::stof(params->node.GetAttr<std::vector<std::string>>("a_min")[0]);
       float a_max = std::stof(params->node.GetAttr<std::vector<std::string>>("a_max")[0]);
       act_layer->setAlpha(a_min);
       act_layer->setBeta(a_max);
-    } else if (params->op_name == "nn.leaky_relu") {
+    } else if (op_name == "nn.leaky_relu") {
       float alpha = std::stof(params->node.GetAttr<std::vector<std::string>>("alpha")[0]);
       act_layer->setAlpha(alpha);
     }
@@ -192,10 +194,11 @@ class ActivationOpConverter : public TensorRTOpConverter {
 
 class ElementWiseBinaryOpConverter : public TensorRTOpConverter {
  public:
-  ElementWiseBinaryOpConverter() : TensorRTOpConverter({kTensor, kTensor}) {}
+  ElementWiseBinaryOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kTensor}) {}
   ~ElementWiseBinaryOpConverter() = default;
 
-  void  Convert(TensorRTOpConverterParams* params) const {
+  void Convert(TensorRTOpConverterParams* params) const {
     static const std::unordered_map<std::string, nvinfer1::ElementWiseOperation> op_map = {
         {"add", nvinfer1::ElementWiseOperation::kSUM},
         {"subtract", nvinfer1::ElementWiseOperation::kSUB},
@@ -204,8 +207,8 @@ class ElementWiseBinaryOpConverter : public TensorRTOpConverter {
         {"power", nvinfer1::ElementWiseOperation::kPOW},
         {"maximum", nvinfer1::ElementWiseOperation::kMAX},
         {"minimum", nvinfer1::ElementWiseOperation::kMIN}};
-    auto it = op_map.find(params->op_name);
-    ICHECK(it != op_map.end()) << "Unsupported elementwise type " << params->op_name;
+    auto it = op_map.find(op_name);
+    ICHECK(it != op_map.end()) << "Unsupported elementwise type " << op_name;
     // Broadcast
     auto input0 = params->inputs.at(0).tensor;
     auto input0_dims = TrtDimsToVector(input0->getDimensions());
@@ -233,7 +236,8 @@ class ElementWiseBinaryOpConverter : public TensorRTOpConverter {
 
 class Conv1DOpConverter : public TensorRTOpConverter {
  public:
-  Conv1DOpConverter() : TensorRTOpConverter({kTensor, kWeight}) {}
+  Conv1DOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight}) {}
   ~Conv1DOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -285,7 +289,8 @@ class Conv1DOpConverter : public TensorRTOpConverter {
 
 class Conv2DOpConverter : public TensorRTOpConverter {
  public:
-  Conv2DOpConverter() : TensorRTOpConverter({kTensor, kWeight}) {}
+  Conv2DOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight}) {}
   ~Conv2DOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -327,6 +332,7 @@ class Conv2DOpConverter : public TensorRTOpConverter {
     auto conv_layer = params->network->addConvolution(*input_tensor, channels, kernel_size,
                                                       params->inputs.at(1).weight, bias);
     ICHECK(conv_layer != nullptr);
+    conv_layer->setName(params->LayerName().c_str());
     if (use_asymmetric_padding) {
 #if TRT_VERSION_GE(5, 1, 5)
       conv_layer->setPrePadding(prepadding);
@@ -349,7 +355,8 @@ class Conv2DOpConverter : public TensorRTOpConverter {
 #if TRT_VERSION_GE(6, 0, 1)
 class Conv3DOpConverter : public TensorRTOpConverter {
  public:
-  Conv3DOpConverter() : TensorRTOpConverter({kTensor, kWeight}) {}
+  Conv3DOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight}) {}
   ~Conv3DOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -399,7 +406,8 @@ class Conv3DOpConverter : public TensorRTOpConverter {
 
 class DenseOpConverter : public TensorRTOpConverter {
  public:
-  DenseOpConverter() : TensorRTOpConverter({kTensor, kWeight}) {}
+  DenseOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight}) {}
   ~DenseOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -434,7 +442,8 @@ class DenseOpConverter : public TensorRTOpConverter {
 
 class BatchNormOpConverter : public TensorRTOpConverter {
  public:
-  BatchNormOpConverter() : TensorRTOpConverter({kTensor, kWeight, kWeight, kWeight, kWeight}) {}
+  BatchNormOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight, kWeight, kWeight, kWeight}) {}
   ~BatchNormOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -532,8 +541,9 @@ class BatchNormOpConverter : public TensorRTOpConverter {
 
 class LayerNormOpConverter : public TensorRTOpConverter {
  public:
-  LayerNormOpConverter() : TensorRTOpConverter({kTensor, kWeight, kWeight}) {}
-  ~LayerNormOpConverter() =  default;
+  LayerNormOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight, kWeight}) {}
+  ~LayerNormOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
     auto input = params->inputs.at(0).tensor;
@@ -605,7 +615,8 @@ class LayerNormOpConverter : public TensorRTOpConverter {
 
 class BatchFlattenOpConverter : public TensorRTOpConverter {
  public:
-  BatchFlattenOpConverter() : TensorRTOpConverter({kTensor}) {}
+  BatchFlattenOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~BatchFlattenOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -619,7 +630,7 @@ class BatchFlattenOpConverter : public TensorRTOpConverter {
 
 class SoftmaxOpConverter : public TensorRTOpConverter {
  public:
-  SoftmaxOpConverter() : TensorRTOpConverter({kTensor}) {}
+  SoftmaxOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~SoftmaxOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -636,7 +647,7 @@ class SoftmaxOpConverter : public TensorRTOpConverter {
 
 class PoolingOpConverter : public TensorRTOpConverter {
  public:
-  PoolingOpConverter() : TensorRTOpConverter({kTensor}) {}
+  PoolingOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~PoolingOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -644,8 +655,8 @@ class PoolingOpConverter : public TensorRTOpConverter {
     static const std::unordered_map<std::string, nvinfer1::PoolingType> op_map = {
         {"nn.max_pool2d", nvinfer1::PoolingType::kMAX},
         {"nn.avg_pool2d", nvinfer1::PoolingType::kAVERAGE}};
-    auto it = op_map.find(params->op_name);
-    ICHECK(it != op_map.end()) << "Unsupported pooling type " << params->op_name << " in TensorRT";
+    auto it = op_map.find(op_name);
+    ICHECK(it != op_map.end()) << "Unsupported pooling type " << op_name << " in TensorRT";
     ICHECK_EQ(params->node.GetAttr<std::vector<std::string>>("layout")[0], "NCHW");
     auto str_pool_size = params->node.GetAttr<std::vector<std::string>>("pool_size");
     auto str_padding = params->node.GetAttr<std::vector<std::string>>("padding");
@@ -683,7 +694,7 @@ class PoolingOpConverter : public TensorRTOpConverter {
     } else {
       pool_layer->setPadding(prepadding);
     }
-    if (params->op_name == "nn.avg_pool2d") {
+    if (op_name == "nn.avg_pool2d") {
       bool count_include_pad =
           std::stoi(params->node.GetAttr<std::vector<std::string>>("count_include_pad")[0]);
       // count_include_pad=True is useless if there is no padding. TRT doesn't
@@ -710,7 +721,7 @@ class PoolingOpConverter : public TensorRTOpConverter {
 #if TRT_VERSION_GE(6, 0, 1)
 class Pooling3DOpConverter : public TensorRTOpConverter {
  public:
-  Pooling3DOpConverter() : TensorRTOpConverter({kTensor}) {}
+  Pooling3DOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~Pooling3DOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -718,8 +729,8 @@ class Pooling3DOpConverter : public TensorRTOpConverter {
     static const std::unordered_map<std::string, nvinfer1::PoolingType> op_map = {
         {"nn.max_pool3d", nvinfer1::PoolingType::kMAX},
         {"nn.avg_pool3d", nvinfer1::PoolingType::kAVERAGE}};
-    auto it = op_map.find(params->op_name);
-    ICHECK(it != op_map.end()) << "Unsupported pooling type " << params->op_name << " in TensorRT";
+    auto it = op_map.find(op_name);
+    ICHECK(it != op_map.end()) << "Unsupported pooling type " << op_name << " in TensorRT";
     ICHECK_EQ(params->node.GetAttr<std::vector<std::string>>("layout")[0], "NCDHW");
     auto str_pool_size = params->node.GetAttr<std::vector<std::string>>("pool_size");
     auto str_padding = params->node.GetAttr<std::vector<std::string>>("padding");
@@ -741,7 +752,7 @@ class Pooling3DOpConverter : public TensorRTOpConverter {
     } else {
       pool_layer->setPaddingNd(prepadding);
     }
-    if (params->op_name == "nn.avg_pool3d") {
+    if (op_name == "nn.avg_pool3d") {
       bool count_include_pad =
           std::stoi(params->node.GetAttr<std::vector<std::string>>("count_include_pad")[0]);
       pool_layer->setAverageCountExcludesPadding(!count_include_pad);
@@ -756,7 +767,8 @@ class Pooling3DOpConverter : public TensorRTOpConverter {
 
 class GlobalPoolingOpConverter : public TensorRTOpConverter {
  public:
-  GlobalPoolingOpConverter() : TensorRTOpConverter({kTensor}) {}
+  GlobalPoolingOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~GlobalPoolingOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -765,8 +777,8 @@ class GlobalPoolingOpConverter : public TensorRTOpConverter {
     static const std::unordered_map<std::string, nvinfer1::PoolingType> op_map = {
         {"nn.global_max_pool2d", nvinfer1::PoolingType::kMAX},
         {"nn.global_avg_pool2d", nvinfer1::PoolingType::kAVERAGE}};
-    auto it = op_map.find(params->op_name);
-    ICHECK(it != op_map.end()) << "Unsupported pooling type " << params->op_name << " in TensorRT";
+    auto it = op_map.find(op_name);
+    ICHECK(it != op_map.end()) << "Unsupported pooling type " << op_name << " in TensorRT";
     ICHECK_EQ(params->node.GetAttr<std::vector<std::string>>("layout")[0], "NCHW");
     const int h = TRT_HAS_IMPLICIT_BATCH(params) ? input_dims[1] : input_dims[2];
     const int w = TRT_HAS_IMPLICIT_BATCH(params) ? input_dims[2] : input_dims[3];
@@ -779,7 +791,7 @@ class GlobalPoolingOpConverter : public TensorRTOpConverter {
 
 class ExpandDimsOpConverter : public TensorRTOpConverter {
  public:
-  ExpandDimsOpConverter() : TensorRTOpConverter({kTensor}) {}
+  ExpandDimsOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~ExpandDimsOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -798,7 +810,7 @@ class ExpandDimsOpConverter : public TensorRTOpConverter {
 
 class SqueezeOpConverter : public TensorRTOpConverter {
  public:
-  SqueezeOpConverter() : TensorRTOpConverter({kTensor}) {}
+  SqueezeOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~SqueezeOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -816,7 +828,7 @@ class SqueezeOpConverter : public TensorRTOpConverter {
 
 class UnaryOpConverter : public TensorRTOpConverter {
  public:
-  UnaryOpConverter() : TensorRTOpConverter({kTensor}) {}
+  UnaryOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~UnaryOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -839,8 +851,8 @@ class UnaryOpConverter : public TensorRTOpConverter {
       {"erf", nvinfer1::UnaryOperation::kERF},
 #endif
     };
-    auto it = op_map.find(params->op_name);
-    ICHECK(it != op_map.end()) << "Unsupported unary type " << params->op_name;
+    auto it = op_map.find(op_name);
+    ICHECK(it != op_map.end()) << "Unsupported unary type " << op_name;
     nvinfer1::IUnaryLayer* unary_layer =
         params->network->addUnary(*params->inputs.at(0).tensor, it->second);
     ICHECK(unary_layer != nullptr);
@@ -850,7 +862,8 @@ class UnaryOpConverter : public TensorRTOpConverter {
 
 class ConcatOpConverter : public TensorRTOpConverter {
  public:
-  ConcatOpConverter() : TensorRTOpConverter({}, /*variable_input_count=*/true) {}
+  ConcatOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {}, /*variable_input_count=*/true) {}
   ~ConcatOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -877,7 +890,7 @@ class ConcatOpConverter : public TensorRTOpConverter {
 
 class SplitOpConverter : public TensorRTOpConverter {
  public:
-  SplitOpConverter() : TensorRTOpConverter({kTensor}) {}
+  SplitOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~SplitOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -925,7 +938,8 @@ class SplitOpConverter : public TensorRTOpConverter {
 
 class BiasAddOpConverter : public TensorRTOpConverter {
  public:
-  BiasAddOpConverter() : TensorRTOpConverter({kTensor, kWeight}) {}
+  BiasAddOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight}) {}
   ~BiasAddOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -959,7 +973,8 @@ class BiasAddOpConverter : public TensorRTOpConverter {
 
 class Conv2DTransposeOpConverter : public TensorRTOpConverter {
  public:
-  Conv2DTransposeOpConverter() : TensorRTOpConverter({kTensor, kWeight}) {}
+  Conv2DTransposeOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight}) {}
   ~Conv2DTransposeOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1030,7 +1045,8 @@ class Conv2DTransposeOpConverter : public TensorRTOpConverter {
 #if TRT_VERSION_GE(6, 0, 1)
 class Conv3DTransposeOpConverter : public TensorRTOpConverter {
  public:
-  Conv3DTransposeOpConverter() : TensorRTOpConverter({kTensor, kWeight}) {}
+  Conv3DTransposeOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kWeight}) {}
   ~Conv3DTransposeOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1087,7 +1103,7 @@ class Conv3DTransposeOpConverter : public TensorRTOpConverter {
 
 class TransposeOpConverter : public TensorRTOpConverter {
  public:
-  TransposeOpConverter() : TensorRTOpConverter({kTensor}) {}
+  TransposeOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~TransposeOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1103,7 +1119,8 @@ class TransposeOpConverter : public TensorRTOpConverter {
 
 class LayoutTransformOpConverter : public TensorRTOpConverter {
  public:
-  LayoutTransformOpConverter() : TensorRTOpConverter({kTensor}) {}
+  LayoutTransformOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~LayoutTransformOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1126,7 +1143,7 @@ class LayoutTransformOpConverter : public TensorRTOpConverter {
 
 class ReshapeOpConverter : public TensorRTOpConverter {
  public:
-  ReshapeOpConverter() : TensorRTOpConverter({kTensor}) {}
+  ReshapeOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~ReshapeOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1135,7 +1152,7 @@ class ReshapeOpConverter : public TensorRTOpConverter {
     auto str_newshape = params->node.GetAttr<std::vector<std::string>>("newshape");
     std::vector<int> new_shape;
     int start_index = TRT_HAS_IMPLICIT_BATCH(params) ? 1 : 0;
-    if(std::stoi(str_newshape[0])==-1) start_index = 0;
+    if (std::stoi(str_newshape[0]) == -1) start_index = 0;
     for (size_t i = start_index; i < str_newshape.size(); ++i) {
       const int value = std::stoi(str_newshape[i]);
       ICHECK_GE(value, -1);
@@ -1147,7 +1164,8 @@ class ReshapeOpConverter : public TensorRTOpConverter {
 
 class PadOpConverter : public TensorRTOpConverter {
  public:
-  PadOpConverter() : TensorRTOpConverter({kTensor, kIgnored}) {}
+  PadOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kIgnored}) {}
   ~PadOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1164,7 +1182,7 @@ class PadOpConverter : public TensorRTOpConverter {
 
 class ReduceOpConverter : public TensorRTOpConverter {
  public:
-  ReduceOpConverter() : TensorRTOpConverter({kTensor}) {}
+  ReduceOpConverter(std::string op_name) : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~ReduceOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1174,8 +1192,8 @@ class ReduceOpConverter : public TensorRTOpConverter {
         {"max", nvinfer1::ReduceOperation::kMAX},
         {"min", nvinfer1::ReduceOperation::kMIN},
         {"mean", nvinfer1::ReduceOperation::kAVG}};
-    auto it = op_map.find(params->op_name);
-    ICHECK(it != op_map.end()) << "Unsupported reduce type " << params->op_name;
+    auto it = op_map.find(op_name);
+    ICHECK(it != op_map.end()) << "Unsupported reduce type " << op_name;
 
     auto input = params->inputs.at(0).tensor;
     ICHECK_EQ(std::stoi(params->node.GetAttr<std::vector<std::string>>("exclude")[0]), false);
@@ -1203,7 +1221,8 @@ class ReduceOpConverter : public TensorRTOpConverter {
 
 class VarianceOpConverter : public TensorRTOpConverter {
  public:
-  VarianceOpConverter() : TensorRTOpConverter({kTensor, kTensor}) {}
+  VarianceOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kTensor}) {}
 
   void Convert(TensorRTOpConverterParams* params) const {
     auto input = params->inputs.at(0).tensor;
@@ -1218,48 +1237,50 @@ class VarianceOpConverter : public TensorRTOpConverter {
       reduce_axes |= 1 << axis;
     }
 
-    //auto mean_layer = params->network->addReduce(*input, nvinfer1::ReduceOperation::kAVG, reduce_axes, keepdims);
-    //ICHECK(mean_layer != nullptr);
-    //auto mean = mean_layer->getOutput(0);
+    // auto mean_layer = params->network->addReduce(*input, nvinfer1::ReduceOperation::kAVG,
+    // reduce_axes, keepdims); ICHECK(mean_layer != nullptr); auto mean = mean_layer->getOutput(0);
     auto mean = params->inputs.at(1).tensor;
 
-    auto diff_layer = params->network->addElementWise(*input, *mean, nvinfer1::ElementWiseOperation::kSUB);
+    auto diff_layer =
+        params->network->addElementWise(*input, *mean, nvinfer1::ElementWiseOperation::kSUB);
     ICHECK(diff_layer != nullptr);
     auto diff = diff_layer->getOutput(0);
 
-    auto square_layer = params->network->addElementWise(*diff, *diff, nvinfer1::ElementWiseOperation::kPROD);
+    auto square_layer =
+        params->network->addElementWise(*diff, *diff, nvinfer1::ElementWiseOperation::kPROD);
     ICHECK(square_layer != nullptr);
     auto square = square_layer->getOutput(0);
 
-    auto var_layer = params->network->addReduce(*square, nvinfer1::ReduceOperation::kAVG, reduce_axes, keepdims);
+    auto var_layer =
+        params->network->addReduce(*square, nvinfer1::ReduceOperation::kAVG, reduce_axes, keepdims);
     ICHECK(var_layer != nullptr);
     auto var = var_layer->getOutput(0);
 
     const float epsilon = 1e-6;
     auto epsilon_tensor = CreateScalar(params, epsilon, var->getDimensions());
-    auto eps_add_layer = params->network->addElementWise(*var, *epsilon_tensor, nvinfer1::ElementWiseOperation::kSUM);
+    auto eps_add_layer = params->network->addElementWise(*var, *epsilon_tensor,
+                                                         nvinfer1::ElementWiseOperation::kSUM);
     ICHECK(eps_add_layer != nullptr);
     auto output = eps_add_layer->getOutput(0);
 
     params->outputs.push_back(output);
 
-    //const float epsilon = std::stof(params->node.GetAttr<std::vector<std::string>>("epsilon")[0]);
+    // const float epsilon =
+    // std::stof(params->node.GetAttr<std::vector<std::string>>("epsilon")[0]);
 
-    //nvinfer1::Weights pes{nvinfer1::DataType::kFLOAT, weight_shift_ptr, gamma.count};
-    //auto var = params->network->addScale(*delta, nvinfer1::ScaleMode::kUNIFORM,
+    // nvinfer1::Weights pes{nvinfer1::DataType::kFLOAT, weight_shift_ptr, gamma.count};
+    // auto var = params->network->addScale(*delta, nvinfer1::ScaleMode::kUNIFORM,
 
-
-    //nvinfer1::IScaleLayer* scale_layer = params->network->addScale(
-    //    *input, nvinfer1::ScaleMode::kCHANNEL, weight_shift, weight_scale, power);
-
+    // nvinfer1::IScaleLayer* scale_layer = params->network->addScale(
+    //     *input, nvinfer1::ScaleMode::kCHANNEL, weight_shift, weight_scale, power);
   }
 };
-
 
 #if TRT_VERSION_GE(5, 1, 5)
 class StridedSliceOpConverter : public TensorRTOpConverter {
  public:
-  StridedSliceOpConverter() : TensorRTOpConverter({kTensor}) {}
+  StridedSliceOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~StridedSliceOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1289,7 +1310,8 @@ class StridedSliceOpConverter : public TensorRTOpConverter {
 
 class AdaptivePoolingOpConverter : public TensorRTOpConverter {
  public:
-  AdaptivePoolingOpConverter() : TensorRTOpConverter({kTensor}) {}
+  AdaptivePoolingOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor}) {}
   ~AdaptivePoolingOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1298,8 +1320,8 @@ class AdaptivePoolingOpConverter : public TensorRTOpConverter {
     static const std::unordered_map<std::string, nvinfer1::PoolingType> op_map = {
         {"nn.adaptive_max_pool2d", nvinfer1::PoolingType::kMAX},
         {"nn.adaptive_avg_pool2d", nvinfer1::PoolingType::kAVERAGE}};
-    auto it = op_map.find(params->op_name);
-    ICHECK(it != op_map.end()) << "Unsupported pooling type " << params->op_name << " in TensorRT";
+    auto it = op_map.find(op_name);
+    ICHECK(it != op_map.end()) << "Unsupported pooling type " << op_name << " in TensorRT";
     ICHECK_EQ(params->node.GetAttr<std::vector<std::string>>("layout")[0], "NCHW");
 
     // This is an approximation of adaptive pooling. Results will not be
@@ -1320,7 +1342,8 @@ class AdaptivePoolingOpConverter : public TensorRTOpConverter {
 
 class BatchMatmulOpConverter : public TensorRTOpConverter {
  public:
-  BatchMatmulOpConverter() : TensorRTOpConverter({kTensor, kTensor}) {}
+  BatchMatmulOpConverter(std::string op_name)
+      : TensorRTOpConverter(std::move(op_name), {kTensor, kTensor}) {}
   ~BatchMatmulOpConverter() = default;
 
   void Convert(TensorRTOpConverterParams* params) const {
@@ -1337,77 +1360,85 @@ class BatchMatmulOpConverter : public TensorRTOpConverter {
   }
 };
 
-const std::shared_ptr<std::unordered_map<std::string, std::shared_ptr<TensorRTOpConverter>>>
-GetOpConverters() {
-  static auto map =
-      std::make_shared<std::unordered_map<std::string, std::shared_ptr<TensorRTOpConverter>>>();
-  if (!map->empty()) return map;
-  map->emplace("nn.relu", std::make_shared<ActivationOpConverter>());
-  map->emplace("sigmoid", std::make_shared<ActivationOpConverter>());
-  map->emplace("tanh", std::make_shared<ActivationOpConverter>());
-  map->emplace("nn.batch_norm", std::make_shared<BatchNormOpConverter>());
-  map->emplace("nn.layer_norm", std::make_shared<LayerNormOpConverter>());
-  map->emplace("nn.softmax", std::make_shared<SoftmaxOpConverter>());
-  map->emplace("nn.conv1d", std::make_shared<Conv1DOpConverter>());
-  map->emplace("nn.conv2d", std::make_shared<Conv2DOpConverter>());
-  map->emplace("nn.dense", std::make_shared<DenseOpConverter>());
-  map->emplace("nn.batch_matmul", std::make_shared<BatchMatmulOpConverter>());
-  map->emplace("nn.bias_add", std::make_shared<BiasAddOpConverter>());
-  map->emplace("add", std::make_shared<ElementWiseBinaryOpConverter>());
-  map->emplace("subtract", std::make_shared<ElementWiseBinaryOpConverter>());
-  map->emplace("multiply", std::make_shared<ElementWiseBinaryOpConverter>());
-  map->emplace("divide", std::make_shared<ElementWiseBinaryOpConverter>());
-  map->emplace("power", std::make_shared<ElementWiseBinaryOpConverter>());
-  map->emplace("maximum", std::make_shared<ElementWiseBinaryOpConverter>());
-  map->emplace("minimum", std::make_shared<ElementWiseBinaryOpConverter>());
-  map->emplace("nn.max_pool2d", std::make_shared<PoolingOpConverter>());
-  map->emplace("nn.avg_pool2d", std::make_shared<PoolingOpConverter>());
-  map->emplace("nn.global_max_pool2d", std::make_shared<GlobalPoolingOpConverter>());
-  map->emplace("nn.global_avg_pool2d", std::make_shared<GlobalPoolingOpConverter>());
-  map->emplace("exp", std::make_shared<UnaryOpConverter>());
-  map->emplace("log", std::make_shared<UnaryOpConverter>());
-  map->emplace("sqrt", std::make_shared<UnaryOpConverter>());
-  map->emplace("abs", std::make_shared<UnaryOpConverter>());
-  map->emplace("negative", std::make_shared<UnaryOpConverter>());
-  map->emplace("nn.batch_flatten", std::make_shared<BatchFlattenOpConverter>());
-  map->emplace("expand_dims", std::make_shared<ExpandDimsOpConverter>());
-  map->emplace("squeeze", std::make_shared<SqueezeOpConverter>());
-  map->emplace("concatenate", std::make_shared<ConcatOpConverter>());
-  map->emplace("split", std::make_shared<SplitOpConverter>());
-  map->emplace("nn.conv2d_transpose", std::make_shared<Conv2DTransposeOpConverter>());
-  map->emplace("transpose", std::make_shared<TransposeOpConverter>());
-  map->emplace("layout_transform", std::make_shared<LayoutTransformOpConverter>());
-  map->emplace("reshape", std::make_shared<ReshapeOpConverter>());
-  map->emplace("nn.pad", std::make_shared<PadOpConverter>());
-  map->emplace("sum", std::make_shared<ReduceOpConverter>());
-  map->emplace("prod", std::make_shared<ReduceOpConverter>());
-  map->emplace("max", std::make_shared<ReduceOpConverter>());
-  map->emplace("min", std::make_shared<ReduceOpConverter>());
-  map->emplace("mean", std::make_shared<ReduceOpConverter>());
-  map->emplace("variance", std::make_shared<VarianceOpConverter>());
-  map->emplace("nn.adaptive_max_pool2d", std::make_shared<AdaptivePoolingOpConverter>());
-  map->emplace("nn.adaptive_avg_pool2d", std::make_shared<AdaptivePoolingOpConverter>());
-  map->emplace("nn.batch_matmul", std::make_shared<BatchMatmulOpConverter>());
+const std::unordered_map<std::string, std::unique_ptr<TensorRTOpConverter>>& GetOpConverters() {
+  static const std::unordered_map<std::string, std::unique_ptr<TensorRTOpConverter>>* map = []() {
+    std::vector<std::unique_ptr<TensorRTOpConverter>> all_converters;
+    all_converters.emplace_back(std::make_unique<ActivationOpConverter>("nn.relu"));
+    all_converters.emplace_back(std::make_unique<ActivationOpConverter>("sigmoid"));
+    all_converters.emplace_back(std::make_unique<ActivationOpConverter>("tanh"));
+    all_converters.emplace_back(std::make_unique<BatchNormOpConverter>("nn.batch_norm"));
+    all_converters.emplace_back(std::make_unique<LayerNormOpConverter>("nn.layer_norm"));
+    all_converters.emplace_back(std::make_unique<SoftmaxOpConverter>("nn.softmax"));
+    all_converters.emplace_back(std::make_unique<Conv1DOpConverter>("nn.conv1d"));
+    all_converters.emplace_back(std::make_unique<Conv2DOpConverter>("nn.conv2d"));
+    all_converters.emplace_back(std::make_unique<DenseOpConverter>("nn.dense"));
+    all_converters.emplace_back(std::make_unique<BatchMatmulOpConverter>("nn.batch_matmul"));
+    all_converters.emplace_back(std::make_unique<BiasAddOpConverter>("nn.bias_add"));
+    all_converters.emplace_back(std::make_unique<ElementWiseBinaryOpConverter>("add"));
+    all_converters.emplace_back(std::make_unique<ElementWiseBinaryOpConverter>("subtract"));
+    all_converters.emplace_back(std::make_unique<ElementWiseBinaryOpConverter>("multiply"));
+    all_converters.emplace_back(std::make_unique<ElementWiseBinaryOpConverter>("divide"));
+    all_converters.emplace_back(std::make_unique<ElementWiseBinaryOpConverter>("power"));
+    all_converters.emplace_back(std::make_unique<ElementWiseBinaryOpConverter>("maximum"));
+    all_converters.emplace_back(std::make_unique<ElementWiseBinaryOpConverter>("minimum"));
+    all_converters.emplace_back(std::make_unique<PoolingOpConverter>("nn.max_pool2d"));
+    all_converters.emplace_back(std::make_unique<PoolingOpConverter>("nn.avg_pool2d"));
+    all_converters.emplace_back(std::make_unique<GlobalPoolingOpConverter>("nn.global_max_pool2d"));
+    all_converters.emplace_back(std::make_unique<GlobalPoolingOpConverter>("nn.global_avg_pool2d"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("exp"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("log"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("sqrt"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("abs"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("negative"));
+    all_converters.emplace_back(std::make_unique<BatchFlattenOpConverter>("nn.batch_flatten"));
+    all_converters.emplace_back(std::make_unique<ExpandDimsOpConverter>("expand_dims"));
+    all_converters.emplace_back(std::make_unique<SqueezeOpConverter>("squeeze"));
+    all_converters.emplace_back(std::make_unique<ConcatOpConverter>("concatenate"));
+    all_converters.emplace_back(std::make_unique<SplitOpConverter>("split"));
+    all_converters.emplace_back(
+        std::make_unique<Conv2DTransposeOpConverter>("nn.conv2d_transpose"));
+    all_converters.emplace_back(std::make_unique<TransposeOpConverter>("transpose"));
+    all_converters.emplace_back(std::make_unique<LayoutTransformOpConverter>("layout_transform"));
+    all_converters.emplace_back(std::make_unique<ReshapeOpConverter>("reshape"));
+    all_converters.emplace_back(std::make_unique<PadOpConverter>("nn.pad"));
+    all_converters.emplace_back(std::make_unique<ReduceOpConverter>("sum"));
+    all_converters.emplace_back(std::make_unique<ReduceOpConverter>("prod"));
+    all_converters.emplace_back(std::make_unique<ReduceOpConverter>("max"));
+    all_converters.emplace_back(std::make_unique<ReduceOpConverter>("min"));
+    all_converters.emplace_back(std::make_unique<ReduceOpConverter>("mean"));
+    all_converters.emplace_back(std::make_unique<VarianceOpConverter>("variance"));
+    all_converters.emplace_back(
+        std::make_unique<AdaptivePoolingOpConverter>("nn.adaptive_max_pool2d"));
+    all_converters.emplace_back(
+        std::make_unique<AdaptivePoolingOpConverter>("nn.adaptive_avg_pool2d"));
+    all_converters.emplace_back(std::make_unique<BatchMatmulOpConverter>("nn.batch_matmul"));
 #if TRT_VERSION_GE(5, 1, 5)
-  map->emplace("clip", std::make_shared<ActivationOpConverter>());
-  map->emplace("nn.leaky_relu", std::make_shared<ActivationOpConverter>());
-  map->emplace("sin", std::make_shared<UnaryOpConverter>());
-  map->emplace("cos", std::make_shared<UnaryOpConverter>());
-  map->emplace("atan", std::make_shared<UnaryOpConverter>());
-  map->emplace("ceil", std::make_shared<UnaryOpConverter>());
-  map->emplace("floor", std::make_shared<UnaryOpConverter>());
-  map->emplace("strided_slice", std::make_shared<StridedSliceOpConverter>());
+    all_converters.emplace_back(std::make_unique<ActivationOpConverter>("clip"));
+    all_converters.emplace_back(std::make_unique<ActivationOpConverter>("nn.leaky_relu"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("sin"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("cos"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("atan"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("ceil"));
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("floor"));
+    all_converters.emplace_back(std::make_unique<StridedSliceOpConverter>("strided_slice"));
 #endif  // TRT_VERSION_GE(5, 1, 5)
 #if TRT_VERSION_GE(6, 0, 1)
-  map->emplace("nn.conv3d", std::make_shared<Conv3DOpConverter>());
-  map->emplace("nn.max_pool3d", std::make_shared<Pooling3DOpConverter>());
-  map->emplace("nn.avg_pool3d", std::make_shared<Pooling3DOpConverter>());
-  map->emplace("nn.conv3d_transpose", std::make_shared<Conv3DTransposeOpConverter>());
+    all_converters.emplace_back(std::make_unique<Conv3DOpConverter>("nn.conv3d"));
+    all_converters.emplace_back(std::make_unique<Pooling3DOpConverter>("nn.max_pool3d"));
+    all_converters.emplace_back(std::make_unique<Pooling3DOpConverter>("nn.avg_pool3d"));
+    all_converters.emplace_back(
+        std::make_unique<Conv3DTransposeOpConverter>("nn.conv3d_transpose"));
 #endif  // TRT_VERSION_GE(6, 0, 1)
 #if TRT_VERSION_GE(7, 0, 0)
-  map->emplace("erf", std::make_shared<UnaryOpConverter>());
+    all_converters.emplace_back(std::make_unique<UnaryOpConverter>("erf"));
 #endif  // TRT_VERSION_GE(7, 0, 0)
-  return map;
+    auto* map = new std::unordered_map<std::string, std::unique_ptr<TensorRTOpConverter>>();
+    for (auto& converter : all_converters) {
+      map->emplace("tensorrt." + converter->op_name, std::move(converter));
+    }
+    return map;
+  }();
+  return *map;
 }
 
 }  // namespace contrib

@@ -23,13 +23,13 @@ def cg_AutoTVM(net, target, params, **kwargs):
     # Compile kernels with history best records
     with autotvm.apply_history_best(tuning_log):
         with tvm.transform.PassContext(opt_level=3):
-            lib = relay.build_module.build(net, target=target, params=params, label="autotvm")
+            lib = relay.build_module.build(net, target=target, params=params)
     return lib
 
 def cg_VanillaTVM(net, target, params, **kwargs):
     # TVM without auto-tuning
     with tvm.transform.PassContext(opt_level=3):
-        lib = relay.build_module.build(net, target=target, params=params, label="tvm")
+        lib = relay.build_module.build(net, target=target, params=params)
     return lib
 
 
@@ -88,7 +88,7 @@ def cg_TensorRT(mod, target, params, **kwargs):
 
     # We confirm that TVM can't pass conv2d to TensorRT if it's winograd without wt
     with tvm.transform.PassContext(opt_level=3, config={'relay.ext.tensorrt.options': config}):
-        lib = relay.build(mod, target=target, params=params, label="tensorrt")
+        lib = relay.build(mod, target=target, params=params)
 
     return lib
 
@@ -128,7 +128,7 @@ def cg_DNNL(net, target, params, **kwargs):
     # It's ok not to do AlterOpLayout because DNNL ops are gonna be changed to GlobalVar,
     # which won't be touched by AlterOpLayout
     with tvm.transform.PassContext(opt_level=3):#, disabled_pass=["AlterOpLayout"]):
-        lib = relay.build(mod, target=target, params=params, label="dnnl")
+        lib = relay.build(mod, target=target, params=params)
 
     return lib
 
@@ -139,10 +139,10 @@ def cg_op_level_backends(backend, net, target, params, **kwargs):
     assert("annotation" in kwargs)
     if kwargs["annotation"] == 'mkl':
         with tvm.transform.PassContext(opt_level=3, disabled_pass=["AlterOpLayout"]):
-            lib = relay.build_module.build(net, target=target, params=params, label=backend)
+            lib = relay.build_module.build(net, target=target, params=params)
     else:
         with tvm.transform.PassContext(opt_level=3):
-            lib = relay.build_module.build(net, target=target, params=params, label=backend)
+            lib = relay.build_module.build(net, target=target, params=params)
     return lib
 
 
@@ -169,7 +169,7 @@ def cg_CUTLASS(mod, target, params, **kwargs):
 
         mod, num_cutlass_partition = tune_cutlass_kernels(mod, sm)
 
-        lib = relay.build(mod, target=target, params=params, label="cutlass")
+        lib = relay.build(mod, target=target, params=params)
         lib = build_cutlass_kernels(lib, sm)
 
     return lib

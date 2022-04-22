@@ -31,7 +31,6 @@ from .dp_table import (
 from .ordered_pattern_matcher import OrderedPatternMatcher
 from collage.pattern_manager.default_patterns import relayop_to_varnames
 
-from collage.analysis import visualize_backend_placement
 import logging
 
 # extract the subgraph of the expr that matches the pattern (only the top layers of the recursive relay expr).
@@ -162,6 +161,7 @@ def get_optimal_backend_pattern(pattern_registry, expr, pattern, given_backends 
       continue
 
     subgraph = extract_subgraph(expr, pattern)
+    subgraph = relay.transform.InferTypeExpr(subgraph)
 
     # Print the useful logs
     logging.info("-" * 45)

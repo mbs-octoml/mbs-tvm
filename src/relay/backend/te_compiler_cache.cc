@@ -136,7 +136,6 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
     }
 
     std::string dp_target = relay_func->GetAttr<String>(attr::kBackendOp, "").value();
-    // Err, shouldn't this be disjunction for diff library backends??
     bool do_custom_lowering = dp_target.size() > 0 &&
                               (dp_target.find("INVALID_BACKEND_OP") == std::string::npos) &&
                               ((dp_target.find("cudnn") != std::string::npos) ||
@@ -147,8 +146,7 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
       if (dp_target.find("reshape") != std::string::npos) {
         do_custom_lowering = false;
       } else {
-        LOG(INFO) << "DP_TARGET: " << dp_target;
-        ICHECK_EQ(dp_target.find("tensorrt"), std::string::npos);
+        LOG(FATAL) << "Target " << dp_target << " should not be lowered via TVM!";
       }
     }
 
@@ -298,7 +296,6 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
     return {tuple[op->index]};
   }
 
-
   void CollectInputs(Map<Expr, Array<te::Tensor>>& input_map, const Expr& expr) {
     const auto* call_node = expr.as<CallNode>();
     ICHECK(call_node) << "expecting call, got:" << std::endl << PrettyPrint(expr);
@@ -334,32 +331,20 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
     Map<Expr, Array<te::Tensor>> input_map;
     CollectInputs(input_map, relay_func->body);
 
-    Array<te::Tensor> outputs;
-    OpImplementation impl;
-
     static const PackedFunc* ftarget_specific_lower_call =
         tvm::runtime::Registry::Get("relay.backend.target_specific_lowering");
     ICHECK(ftarget_specific_lower_call)
         << "relay.backend.target_specific_lowering is not registered";
     LoweredOutput lowered_out = (*ftarget_specific_lower_call)(relay_func, input_map, dp_target);
-    outputs = lowered_out->outputs;
-    impl = lowered_out->implementation;
 
-    if (outputs.size() != 1) {
+    if (lowered_out->outputs.size() != 1) {
       const auto* tuple_type = call_node->checked_type().as<TupleTypeNode>();
       ICHECK(tuple_type) << "Expect output to be a tuple type";
-      ICHECK_EQ(tuple_type->fields.size(), outputs.size());
+      ICHECK_EQ(tuple_type->fields.size(), lowered_out->outputs.size());
     }
 
-    // Set the name to `__copy`. It will be detected in graph executor to perform
-    // data copy across devices.
-    if (op == device_copy_op_) {
-      readable_name_stream_.str(std::string());
-      readable_name_stream_ << "__copy";
-    } else {
-      readable_name_stream_ << '_' << op->name;
-    }
-    return outputs;
+    op_implementations_[op.operator->()] = lowered_out->implementation;
+    return lowered_out->outputs;
   }
 
  public:
@@ -444,8 +429,10 @@ class ScheduleBuilder : public ExprVisitor {
 
       // Use TOPI schedule if user specificed, or the function has no auto_scheduler schedule.
       if (!schedule.defined() && !prim_func.defined()) {
+        ICHECK(anchor_op_.defined());
         auto anchor_impl = lower_te_compute.op_implementations_.find(anchor_op_.operator->());
-        ICHECK(anchor_impl != lower_te_compute.op_implementations_.end());
+        ICHECK(anchor_impl != lower_te_compute.op_implementations_.end())
+            << "for anchor op " << anchor_op_->name;
         schedule = anchor_impl->second.Schedule(anchor_attrs_, tensor_outs, target_);
       }
       if (schedule.defined()) {
