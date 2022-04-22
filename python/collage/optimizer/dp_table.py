@@ -1,38 +1,39 @@
 # Immutable and efficient implementation for an array of bits
 from bitarray import frozenbitarray
 from .comp_graph import (
-    CGNode,
-)
+            CGNode,
+        )
 from collage.utils import (
-    is_constant_or_var_node,
-    is_var_node,
-    is_constant_node,
-    is_tuple_node,
-    is_tuplegetitem_node,
-    get_op_pattern,
-    is_call_node,
-    get_args,
-    is_var,
-)
+            is_constant_or_var_node,
+            is_var_node, 
+            is_constant_node, 
+            is_tuple_node, 
+            is_tuplegetitem_node,
+            get_op_pattern,
+            is_call_node,
+            get_args,
+            is_var,
+        )
 from collage.optimizer.optimizer_utils import log_matched_ops_by_method
 from tvm.relay.dataflow_pattern import (
-    is_op,
-    wildcard,
-    is_tuple_get_item,
-    is_tuple, is_constant,
-    WildcardPattern,
-    CallPattern,
-    ConstantPattern,
-    VarPattern,
-)
+                        is_op, 
+                        wildcard, 
+                        is_tuple_get_item, 
+                        is_tuple, is_constant, 
+                        WildcardPattern,
+                        CallPattern,
+                        ConstantPattern,
+                        VarPattern,
+                    )
 from collections import defaultdict
 import logging
 from collage.utils import (
-    create_backend_pattern_annotation,
-    get_backend_from_backend_pattern_annotation
-)
+            create_backend_pattern_annotation,
+            get_backend_from_backend_pattern_annotation
+        )
 from tvm import relay
 from collage.interface import CollageContext
+
 
 try:
     import Queue as Q  # ver. < 3.0
@@ -44,7 +45,6 @@ FrontierQueue class
 - It maintains frontiers to match patterns using PriorityQueue
 - Current main job is to prevent duplicate frontiers from being added to PriorityQueue
 """
-
 
 class FrontierQueue:
     def __init__(self):
@@ -72,7 +72,6 @@ class FrontierQueue:
     def get(self):
         return self._frontiers.get()
 
-
 """
 MatchInfoExtractor aims to collect following two information
 1) Matched nodes
@@ -85,8 +84,6 @@ Example
 - 2) Conv(Data, Weight) # Data2 doesn't count because it's not an op
 - 3) {Add(...) : '0-tvm-add'}
 """
-
-
 class MatchInfoExtractor:
     def __init__(self, comp_graph):
         self._comp_graph = comp_graph
@@ -149,7 +146,7 @@ class MatchInfoExtractor:
             self.visit_expr(arg, pattern.fields[a_idx])
 
     def visit_expr_tuplegetitem(self, expr, pattern):
-        self.visit_expr(expr.tuple_value, pattern.tuple_value)
+        self.visit_expr(expr.tuple_value, pattern.tuple)
 
     def visit_expr_call(self, expr, pattern):
         op, args, attrs, type_args, span = expr.op, expr.args, expr.attrs, expr.type_args, expr.span
@@ -163,11 +160,9 @@ DPTableCell class
 - It keeps necessary information for last optimal match for a DP table cell
  > e.g., opt_cost, opt_pat, opt_match
 """
-
-
 class DPTableCell:
     def __init__(self, best_b_op_cost, best_b_op_name, prev_cell, match_dic,
-                 bitvec, index_to_min_bitvec, min_order):
+                 key, post_order_bits, min_post_dfs_order):#, frontiers):
         # Last one matched pattern when this cell is created
         # We have to backtrace to get all patterns included in the optimal match using prev_cell below.
         self.best_b_op_name = best_b_op_name
@@ -184,7 +179,7 @@ class DPTableCell:
         # For now, we use 0.01 for everything else than bert-full (0.5)
         # Bert-full has the issue of picking up inefficeint TensorRT ops for lightweighted kernel
         # e.g., add+relu, multiply, etc; it is more likely the issue of op measurement variance though
-        self.C = 0.01  # 0.5 #0.1 #1 #0.01
+        self.C = 0.01 #0.5 #0.1 #1 #0.01
 
         # Optimal cost with selected nodes
         self.opt_cost = self.get_cost(best_b_op_cost, prev_cell)
@@ -195,32 +190,31 @@ class DPTableCell:
         # match_post_dfs_order k to which all nodes up to k post_dfs_order are matched
         # min_post_dfs_order means the min of match_post_dfs_order
         # given that we started matching for min_post_dfs_order and nodes up to min should be all matched
-        self.bitvec = bitvec
-        self._index_to_min_bitvec = index_to_min_bitvec
-        self.succ_min_order = self.get_succ_min_order(min_order)
-        logging.info(f"cell for bitvec {self.bitvec} has succ_min_order {self.succ_min_order}")
+        self.key = key
+        self._post_order_bits = post_order_bits
+        self.match_post_dfs_order = self.get_match_post_dfs_order(min_post_dfs_order)
 
     def __repr__(self):
         return f"{self.best_b_op_name}, {str(self.match_dic)}"
 
-    def is_matched_in_cell(self, post_dfs_order):
-        post_bitvec = self._index_to_min_bitvec[post_dfs_order]
-        return post_bitvec & self.bitvec == post_bitvec
+    def is_matched_up_to_post_dfs_order(self, post_dfs_order, key):
+        p_bits = self._post_order_bits[post_dfs_order]
+        return p_bits & self.key == p_bits
 
-    def get_succ_min_order(self, min_order):
-        succ_min_order = min_order
-        while succ_min_order in self._index_to_min_bitvec:
-            if not self.is_matched_in_cell(succ_min_order):
-                succ_min_order -= 1
+    def get_match_post_dfs_order(self, min_order):
+        match_order = min_order
+        while match_order in self._post_order_bits:
+            if not self.is_matched_up_to_post_dfs_order(match_order, self.key):
+                match_order -= 1
                 break
             # else:
-            #     raise Exception("It means that succ_min_order can be more than min_order, which doesn't make sense")
-            succ_min_order += 1
+            #     raise Exception("It means that match_order can be more than min_order, which doesn't make sense")
+            match_order += 1
 
         # This assertion doesn't hold: for example, conv2d+Relu can be 3 vs. -1
-        # assert succ_min_order == min_order or succ_min_order == min_order+1, f"succ_min_order {succ_min_order} vs. min_order {min_order}"
+        # assert match_order == min_order or match_order == min_order+1, f"match_order {match_order} vs. min_order {min_order}"
 
-        return succ_min_order
+        return match_order
 
     def get_cost(self, op_cost, prev_cell):
         # prev_opt_cost means optimal cost for all patterns matched before the current matched pattern.
@@ -232,14 +226,10 @@ class DPTableCell:
     def update(self, op_cost, op_name, prev_cell, match_dic):
         total_cost = self.get_cost(op_cost, prev_cell)
         if total_cost < self.opt_cost:
-            logging.info(f"Updating search state {self.bitvec} for new faster path")
             self.opt_cost = total_cost
             self.best_b_op_name = op_name
             self.prev_cell = prev_cell
             self.match_dic = match_dic
-        else:
-            logging.info(f"Not updating search state {self.bitvec}")
-
 
 """
 DPTable class
@@ -248,55 +238,59 @@ and value is a tuple of min cost and last matched_pattern.
 - It can also generate a string of all matched patterns and a result dictionary where
 key is a relay Expression (pointer) and value is a matched backend operator annotation.
 """
-
-
 class DPTable:
     def __init__(self, pattern_registry, comp_graph):
         self._pattern_registry = pattern_registry
         self._comp_graph = comp_graph
 
-        self._n_nodes = comp_graph.get_n_nodes()  # why - 1 here???
+        self._n_nodes = comp_graph.get_n_nodes() - 1
         logging.info(f"# of nodes in comp graph: {self._n_nodes}")
         root_node = comp_graph.get_root()
-        default_key_str = ''.join(self.zero_bitlist())
-        self._zero_bitvec = frozenbitarray(default_key_str)
+        default_key_str = ''.join(self.gen_default_node_key_list())
+        self._zero_key = frozenbitarray(default_key_str)
 
         # This is a hash table where a key is a matched node and value is a key for DPTableCells to be updated.
         # Note that these DPTableCells do not include matched nodes, but include the parent of the root of matched nodes.
-        self._min_order_to_possible_bitvecs = defaultdict(set)
+        self._node_to_key = defaultdict(set)
         # -1 is because we set topological order from 0 and there is a dummy match at the beginning
-        min_order = -1
-        self._min_order_to_possible_bitvecs[min_order].add(self._zero_bitvec)
+        min_post_dfs_order = -1
+        tmp_key = self.gen_key_for_node_to_key_dic(min_post_dfs_order)
+        self._node_to_key[tmp_key].add(self._zero_key)
 
         # Pruning: We aim to check if DPTableCell includes all the nodes up to k-th post_dfs_order
         # using pre-generated bits that mean all the nodes up to k-th post_dfs_order are matched
         # _post_order_bits has a key of post_dfs_order (k) and value of bits
-        self._index_to_min_bitvec = self.gen_index_to_min_bitvec()
-        self._dp_table = {self._zero_bitvec: DPTableCell(0, None, None, {},
-                                                         self._zero_bitvec, self._index_to_min_bitvec,
-                                                         min_order)}
-        # logging.info(f"post_order_bits = {self._index_to_min_bitvec}")
+        self._post_order_bits = self.gen_post_order_bits()
+        self._dp_table = {self._zero_key: DPTableCell(0, None, None, {},
+                                                      self._zero_key, self._post_order_bits, min_post_dfs_order)}  # , {root_node})}
+        # print(self._post_order_bits)
 
-    def gen_index_to_min_bitvec(self):
-        bitlist = self.zero_bitlist()
+    def gen_key_for_node_to_key_dic(self, match_post_dfs_order):
+        return match_post_dfs_order
+        # This doesn't include all the frontiers for newly created match
+        # For example, it misses frontiers from previous match before merging with matched_frontiers
+        # return (node.idx, match_post_dfs_order)
+
+    def gen_post_order_bits(self):
+        key_list = self.gen_default_node_key_list()
         post_dfs_order = 0
-        # Dummpy index_to_min_bitvec
-        index_to_min_bitvec = {-1: self.bitlist_to_bitvec(bitlist)}
+        # Dummpy post_order_bits
+        post_order_bits = {-1: self.gen_node_key_from_key_list(key_list)}
 
         # Note that _topological_order corresponds to post_dfs_order
-        for node_idx in range(len(bitlist)):
+        for node_idx in range(len(key_list)):
             if self._comp_graph._nodes[node_idx]._topological_order > post_dfs_order:
-                bitvec = self.bitlist_to_bitvec(bitlist)
-                index_to_min_bitvec[post_dfs_order] = bitvec
+                node_key = self.gen_node_key_from_key_list(key_list)
+                post_order_bits[post_dfs_order] = node_key
                 post_dfs_order = self._comp_graph._nodes[node_idx]._topological_order
 
-            bitlist[node_idx] = '1'
+            key_list[node_idx] = '1'
 
-        assert post_dfs_order not in index_to_min_bitvec
-        bitvec = self.bitlist_to_bitvec(bitlist)
-        index_to_min_bitvec[post_dfs_order] = bitvec
+        assert post_dfs_order not in post_order_bits
+        node_key = self.gen_node_key_from_key_list(key_list)
+        post_order_bits[post_dfs_order] = node_key
 
-        return index_to_min_bitvec
+        return post_order_bits
 
     # def __repr__(self):
     #     return self._dp_table
@@ -305,18 +299,17 @@ class DPTable:
     # e.g., 1000 means that only first node is matched
     # Input: a list of matched nodes
     # Output: a key of DPTable
-    def node_set_to_bitvec(self, matched_nodes):
-        bitlist = self.zero_bitlist()
+    def gen_node_key(self, matched_nodes):
+        key_list = self.gen_default_node_key_list()
         for node in matched_nodes:
-            assert node.idx < len(bitlist), f"Index {node.idx} out of range for {len(bitlist)} nodes"
-            bitlist[node.idx] = '1'
-        return self.bitlist_to_bitvec(bitlist)
+            key_list[node.idx] = '1'
+        return self.gen_node_key_from_key_list(key_list)
 
-    def bitlist_to_bitvec(self, key_list):
+    def gen_node_key_from_key_list(self, key_list):
         return frozenbitarray(''.join(key_list))
 
     # Generate a default key of DPTable (a series of 0)
-    def zero_bitlist(self):
+    def gen_default_node_key_list(self):
         return ['0' for _ in range(self._n_nodes)]
 
     def get_parent_nodes(self, node):
@@ -342,7 +335,7 @@ class DPTable:
         if len(parent_nodes) == 0:
             flag = True
         else:
-            parents_key = self.node_set_to_bitvec(parent_nodes)
+            parents_key = self.gen_node_key(parent_nodes)
             flag = (parents_key & key) == parents_key
             # check if at least one parent is included
             # flag = (parents_key & key) != self._zero_key
@@ -365,6 +358,7 @@ class DPTable:
     #         m_frontier_key = self.gen_node_key([m_frontier_key])
     #         if m_frontier in
 
+
     # Generate candidate cells to update based on one of following strategies
     # 1) generate candidates that do not include current matched nodes
     # 2) generate candidates that do not include current matched nodes & include at least one of parents for root matched nodes
@@ -373,75 +367,73 @@ class DPTable:
     # Note that 2) holds under the assumption that we only have patterns with a single root
     # We figured out that 1) is too slow, so stick to 2).
     # 3) requires additional implementation for building post-dominator tree
-    def gen_transitions(self, matched_nodes, min_order):
+    def gen_candidate_cells(self, root_matched_node, matched_nodes, min_order):#, frontiers):
         # If matching happens from k post_dfs_order, then it means that all nodes up to post_dfs_order of k
         # should already be matched.
-        transitions = []
-        matched_bitvec = self.node_set_to_bitvec(matched_nodes)
+        candidates = []
+        cur_match_key = self.gen_node_key(matched_nodes)
 
-#        logging.info(f"[gen_candidate_cells] min_order_to_candidate_bitvecs: {self._min_order_to_possible_bitvecs}")
-        logging.info(f"[gen_candidate_cells] matched_bitvec, min_order: {matched_bitvec}, {min_order}")
-        possible_bitvecs = self._min_order_to_possible_bitvecs[min_order]
+        # printe(f"[gen_candidate_cells] node_to_key: {self._node_to_key}")
+        tmp_key = self.gen_key_for_node_to_key_dic(min_order)
+        # printe(f"[gen_candidate_cells] cur_match_key, min_dfs_order: {cur_match_key}, {min_order}")
+        candidate_keys = self._node_to_key[tmp_key]
 
-        for prev_bitvec in possible_bitvecs:
-            logging.info(f"[gen_candidate_cells] candidate prev_bitvec: {prev_bitvec}")
-            prev_cell = self._dp_table[prev_bitvec]
+        for key in candidate_keys:
+            # printe(f"[gen_candidate_cells] candidate key: {key}")
+            cell = self._dp_table[key]
 
-            # and self.are_parents_included(root_matched_node, prev_bitvec):
-            no_overlap = (matched_bitvec & prev_bitvec) == self._zero_bitvec
-            if no_overlap and prev_cell.succ_min_order >= min_order:
-                assert prev_cell.succ_min_order == min_order
+            # and self.are_parents_included(root_matched_node, key):
+            if (cur_match_key & key) == self._zero_key and cell.match_post_dfs_order >= min_order:
+                assert cell.match_post_dfs_order == min_order
 
-                new_bitvec = matched_bitvec | prev_bitvec
-                logging.info(f"[gen_candidate_cells] {prev_bitvec} -> {new_bitvec}")
-                transitions.append((prev_cell, new_bitvec))
+                new_key = cur_match_key | key
+                # printe(f"[gen_candidate_cells] Selected, new key: {new_key}")
+                candidates.append((new_key, cell))
 
                 # Deal with frontiers
-                # new_frontiers = self.gen_new_frontiers(prev_cell, matched_nodes, frontiers)
+                # new_frontiers = self.gen_new_frontiers(cell, matched_nodes, frontiers)
 
-        return transitions
 
-    # Find all the transitions the candidate kernel for matched_nodes with min_cost could apply to, and
-    # if necessary update the best paths.
-    def update(self, matched_nodes, match_dic, best_backend_pattern_name, min_cost):
+        return candidates
+
+    def update(self, matched_nodes, match_dic, best_backend_pattern_name, min_cost, frontiers):
         # Generate candidate DPTableCells that need to be updated with new match
         root_matched_node = self.get_root_matched_nodes(matched_nodes)
         match_post_dfs_order = root_matched_node._topological_order
         min_order = match_post_dfs_order - 1
 
-        transitions = self.gen_transitions(matched_nodes, min_order)
+        candidate_cells = self.gen_candidate_cells(root_matched_node, matched_nodes, min_order)
 
         # Update DPTableCells with new match
-        for (prev_cell, new_bitvec) in transitions:
-            # Applying this kernel could take us from prev_cell to a new cell with new_bitvec.
-            if new_bitvec not in self._dp_table:
-                logging.info(f"Reached new search state {new_bitvec}")
-                self._dp_table[new_bitvec] = DPTableCell(min_cost, best_backend_pattern_name, prev_cell, match_dic,
-                                                         new_bitvec, self._index_to_min_bitvec, min_order)
+        for (new_key, prev_cell) in candidate_cells:
+            if new_key not in self._dp_table:
+                self._dp_table[new_key] = DPTableCell(min_cost, best_backend_pattern_name, prev_cell, match_dic,
+                                                      new_key, self._post_order_bits, min_order)
             else:
-                self._dp_table[new_bitvec].update(min_cost, best_backend_pattern_name, prev_cell, match_dic)
+                self._dp_table[new_key].update(min_cost, best_backend_pattern_name, prev_cell, match_dic)
 
-            new_cell = self._dp_table[new_bitvec]
-            new_min_order = new_cell.succ_min_order
+            cell = self._dp_table[new_key]
+            cell_order = cell.match_post_dfs_order
 
-            if new_min_order >= min_order:
+            if cell_order >= min_order:
                 # This assertion doesn't hold: for example, conv2d+Relu can be 3 vs. -1
-                # assert new_min_order in [min_order, min_order + 1], f"new_min_order {new_min_order} vs. min_order {min_order}"
-                # printe(f"[update] Added new_min_order, key: {new_min_order}, {new_bitvec}")
-                self._min_order_to_possible_bitvecs[new_min_order].add(new_bitvec)
+                # assert cell_order in [min_order, min_order + 1], f"cell_order {cell_order} vs. min_order {min_order}"
+                # printe(f"[update] Added cell_order, key: {cell_order}, {new_key}")
+                tmp_key = self.gen_key_for_node_to_key_dic(cell_order)
+                self._node_to_key[tmp_key].add(new_key)
 
                 # Pruning condition 1: All parents of root (of matched nodes) should be included in candidates
-                # if self.are_parents_included(root_matched_node, new_bitvec):
-                #     self._node_to_key[node].add(new_bitvec)
+                # if self.are_parents_included(root_matched_node, new_key):
+                #     self._node_to_key[node].add(new_key)
 
     def assign_backend_pattern_to_expr(self):
-        all_matched_key = frozenbitarray('1' * self._n_nodes)
-        # print(self._node_to_key)
+        all_matched_key = frozenbitarray('1'*self._n_nodes)
+        #print(self._node_to_key)
         # This is a cell representing the first match;
         opt_match_cell = self._dp_table[all_matched_key]
 
         # Note that last prev_cell is always None
-        logging.info("=" * 50)
+        logging.info("="*50)
         logging.info("Matched operators (in post-dfs-order, from the root of comp graph to the last node)")
         group_id, backend_annotation = 0, None
         optimized_match = {}
@@ -465,6 +457,6 @@ class DPTable:
             group_id += 1
 
         logging.info("=" * 50)
-        # log_matched_ops_by_method(CollageContext.op_level_placement, matched_b_op_name)
+        #log_matched_ops_by_method(CollageContext.op_level_placement, matched_b_op_name)
 
         return optimized_match

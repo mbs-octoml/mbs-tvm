@@ -4,14 +4,9 @@ from collage.pattern_manager.pattern_registry import PatternRegistry
 from collage.utils import get_function_body, is_constant_node
 from .comp_graph import ComputationGraph
 from .comp_graph_optimizer import (
-    CompGraphOptimizer,
-    AssignBackendExprVisitor,
-)
-from collage.backend.default_backends import (
-    partition_CUTLASS,
-    partition_DNNL,
-    partition_TensorRT,
-)
+                    CompGraphOptimizer,
+                    AssignBackendExprVisitor,
+                )
 from .evolutionary_searcher import EvolutionarySearcher
 from .ext_compiler_op_annotator import ExtCompilerOpAnnotator
 from tvm.relay.op.contrib.tensorrt import prune_tensorrt_subgraphs
@@ -24,16 +19,13 @@ from .op_match_logger import OpMatchLogger, OpMatchReader
 from collage.backend import BackendKind
 from collage.analysis import visualize_backend_placement
 
-
 def setup_pattern_registry(hw_name):
     pattern_registry = PatternRegistry.get(hw_name)
     return pattern_registry
 
-
 @tvm._ffi.register_func("collage.optimizer.print_attr_args")
 def print_attr_args(expr):
     logger.info(f"attr: {get_attr_vals(expr)}")
-
 
 @tvm._ffi.register_func("collage.optimizer.visualize_network_debug")
 def visualize_network_debug(relay_expr, name):
@@ -43,14 +35,96 @@ def visualize_network_debug(relay_expr, name):
         visualize_network(relay_expr, f"{net_name}_{name}")
         logger.info("[Done] Debug visualization")
 
+def apply_tensorrt_op(mod):
+    logging.info("Applying TensorRT op pass")
+    from tvm.relay.op.contrib.tensorrt import RemoveDropoutPass
+    # Get best op match info
+    fn_body = mod["main"].body
+    # Annotating expression
+    target_str = "tensorrt"
+
+    # Do merge and partition pass
+    use_implicit_batch = False
+    remove_no_mac_subgraphs = False
+    max_workspace_size = 1 << 30
+    version = None
+
+    config = {
+        "use_implicit_batch": use_implicit_batch,
+        "max_workspace_size": max_workspace_size,
+        "remove_no_mac_subgraphs": remove_no_mac_subgraphs,
+    }
+
+    if version:
+        assert isinstance(version, tuple) and len(version) == 3
+        config["tensorrt_version"] = version
+    else:
+        linked_version = tuple(tvm.get_global_func("relay.op.get_tensorrt_version")())
+        if not linked_version:
+            logger.warning(
+                "TVM was not built against TensorRT and no version was provided to "
+                "partition_for_tensorrt. Defaulting to 6.0.1"
+            )
+            linked_version = (6, 0, 1)
+        config["tensorrt_version"] = linked_version
+
+    # Warning(@Soo): I assume this is only useful when folding constant
+    seq = tvm.transform.Sequential(
+        [
+            transform.InferType(),
+            #RemoveDropoutPass(),
+            #transform.RemoveUnusedFunctions(),
+            #transform.ConvertLayout(
+            #    {
+            #        "nn.conv2d": ["NCHW", "default"],
+            #        "nn.conv3d": ["NCDHW", "default"],
+            #        "nn.conv2d_transpose": ["NCHW", "default"],
+            #    }
+            #),
+            transform.FoldConstant(),
+            transform.AnnotateTarget("tensorrt"),
+            transform.MergeCompilerRegions(),
+            transform.PartitionGraph(),
+            transform.InferType(),
+        ]
+    )
+
+    # Do prune_tensorrt_subgraphs
+    with tvm.transform.PassContext(opt_level=3, config={"relay.ext.tensorrt.options": config}):
+        mod = seq(mod)
+    return mod
+
+def apply_dnnl_op(mod):
+    opt_pass = tvm.transform.Sequential(
+        [
+            transform.InferType(),
+            transform.SimplifyInference(),
+            transform.FoldConstant(),
+            transform.FoldScaleAxis(),
+            transform.AnnotateTarget("dnnl"),
+            transform.MergeCompilerRegions(),
+            transform.PartitionGraph(),
+            transform.InferType(),
+        ]
+    )
+
+    with tvm.transform.PassContext(opt_level=3, disabled_pass=["AlterOpLayout"]):
+        mod = opt_pass(mod)
+
+    return mod
 
 @tvm._ffi.register_func("collage.optimizer.apply_external_compiler_op")
 def apply_external_compiler_op(mod):
-    mod = partition_CUTLASS(mod)
-    mod = partition_DNNL(mod)
-    mod = partition_TensorRT(mod)
-    return mod
+    target = mod["main"].attrs["BuildTarget"]
+    if "cuda" in target:
+        mod = apply_tensorrt_op(mod)
+    elif "llvm" in target:
+        mod = apply_dnnl_op(mod)
+    else:
+        Exception(f"Unexpected HW for external compiler op pass: {hw_name}")
 
+    return mod
+    # return mod, config
 
 @tvm._ffi.register_func("collage.optimizer.get_user_fusion")
 def get_user_fusion(relay_expr):
@@ -58,7 +132,6 @@ def get_user_fusion(relay_expr):
     relay_expr = get_function_body(relay_expr)
     match_path = CollageContext.graph_level_tmp_file
     opt_match = OpMatchReader().read(relay_expr, match_path)
-
 
 @tvm._ffi.register_func("collage.optimizer.visualize_backend_placement")
 def run_backend_placement_visualization(relay_expr):
@@ -68,19 +141,16 @@ def run_backend_placement_visualization(relay_expr):
     opt_match = OpMatchReader().read(relay_expr, match_path)
     visualize_backend_placement(relay_expr, CollageContext.placement_vis_file)
 
-
 def get_backends(func_expr, backend_registry):
-    assert ("BackendList" in func_expr.attrs)
+    assert("BackendList" in func_expr.attrs)
     backend_list_str = func_expr.attrs["BackendList"]
     backend_str_list = backend_list_str.split(",")
     backends = [backend_registry[b] for b in backend_str_list]
 
     return backends
 
-
 def get_backend_names(backends):
-    return [b.name for b in backends]
-
+    return [ b.name for b in backends ]
 
 def run_op_level_opt(func_expr):
     target = func_expr.attrs["BuildTarget"]
@@ -88,7 +158,7 @@ def run_op_level_opt(func_expr):
     backend_registry = pattern_registry.backend_registry
     given_backends = get_backends(func_expr, backend_registry)
     relay_expr = get_function_body(func_expr)
-
+    
     logging.info(f"[Op-Level: DP] Computation graph generation...")
     comp_graph = ComputationGraph(relay_expr)
     n_relay_nodes = comp_graph.n_relay_nodes
@@ -96,7 +166,7 @@ def run_op_level_opt(func_expr):
 
     # Optimizing graph
 
-    assert (pattern_registry is not None)
+    assert(pattern_registry is not None)
     optimizer = CompGraphOptimizer(pattern_registry, given_backends)
 
     """
@@ -113,8 +183,7 @@ def run_op_level_opt(func_expr):
     """
     optimized_match = optimizer.optimize(comp_graph, target)
 
-    logging.info(
-        "[Op-Level: DP] It finished optimizing comp graph and assigning backend ops to Relay Expr (backend attr)")
+    logging.info("[Op-Level: DP] It finished optimizing comp graph and assigning backend ops to Relay Expr (backend attr)")
 
     # Save fisrt layer best results
     OpMatchLogger().save(relay_expr, optimized_match, log_path=CollageContext.op_level_placement_log)
@@ -164,13 +233,12 @@ def run_two_level_opt(relay_expr):
     graph_backend = None
     for backend in given_backends:
         if backend.kind == BackendKind.GRAPH_LEVEL:
-            assert graph_backend is None, "At most one graph-level backend can be enabled at a time"
+            assert(graph_backend is None, "Current tvm build only supports TensorRT and DNNL")
             graph_backend = backend.name
 
     # Prepare OpStateToMatchTranslator
     # This translates Op State to optimized_match with the following two dictionaries
-    op_state_to_match_translator = OpStateToMatchTranslator(optimized_match, group_id_to_exprs_anno,
-                                                            backend_name=graph_backend)
+    op_state_to_match_translator = OpStateToMatchTranslator(optimized_match, group_id_to_exprs_anno, backend_name = graph_backend)
 
     # Run evolutionary search
     n_ops_after_first_level = len(group_id_to_exprs_anno.keys())
@@ -210,33 +278,30 @@ def run_two_level_opt(relay_expr):
 
     if n_ops > 0:
         ev_searcher = EvolutionarySearcher(
-            op_state_to_match_translator,
-            relay_expr,
-            net_name,
-            build_target,
-            batch_size=batch_size,
-            n_ops=n_ops,
-            match_path=CollageContext.graph_level_tmp_file,
-            pop_size=CollageContext.evolutionary_search_pop_size,
-            max_iter=CollageContext.evolutionary_search_max_iter
-        )
-        second_opt_match = ev_searcher.search(rnd_seed=64, n_hours=CollageContext.evolutionary_search_budget)
+                                            op_state_to_match_translator,
+                                            relay_expr,
+                                            net_name,
+                                            build_target,
+                                            batch_size=batch_size,
+                                            n_ops=n_ops,
+                                            match_path=CollageContext.graph_level_tmp_file,
+                                            pop_size=CollageContext.evolutionary_search_pop_size,
+                                            max_iter=CollageContext.evolutionary_search_max_iter
+                                          )
+        second_opt_match = ev_searcher.search(rnd_seed=64, n_hours = CollageContext.evolutionary_search_budget)
     else:
         second_opt_match = optimized_match
-        logger.info(
-            "No need for subgraph optimization because either 1) op optimization pass only chose Ext compiler ops"
-            + " or 2) External compiler can't support ops that are not assigned to external compilers")
+        logger.info("No need for subgraph optimization because either 1) op optimization pass only chose Ext compiler ops"
+               + " or 2) External compiler can't support ops that are not assigned to external compilers")
 
     # Update backend information to corresponding best match
     second_opt_match = OpMatchReader().read(relay_expr, CollageContext.graph_level_placement_log)
 
     return second_opt_match
 
-
 @tvm._ffi.register_func("collage.optimizer.run_dp")
 def run_dp(relay_expr):
     run_op_level_opt(relay_expr)
-
 
 @tvm._ffi.register_func("collage.optimizer.assign_backend_for_op_measurement")
 def assign_backend_for_op_measurement(relay_expr):

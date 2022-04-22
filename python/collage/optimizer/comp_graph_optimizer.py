@@ -31,6 +31,7 @@ from .dp_table import (
 from .ordered_pattern_matcher import OrderedPatternMatcher
 from collage.pattern_manager.default_patterns import relayop_to_varnames
 
+from collage.analysis import visualize_backend_placement
 import logging
 
 # extract the subgraph of the expr that matches the pattern (only the top layers of the recursive relay expr).
@@ -63,11 +64,16 @@ def extract_subgraph(expr, pattern):
     cur_checked_type = expr.checked_type
     expr = get_expr(expr)
 
+    # assert (type(expr) is not tvm.ir.type.TupleType)
     if isinstance(relay_pattern, WildcardPattern):
       # The above issue with avgpool2d is resolved!
       # The problem is because checked_type is updated when generating new expr.
       # We resolved it by saving checked_type from old expression
       ret = relay.var("data", cur_checked_type)
+      #if is_call_node(expr) or is_tuple_node(expr) or is_constant_node(expr):
+      #  ret = relay.var("data", expr.checked_type)
+      #else:
+      #  ret = relay.var("data", expr.type_annotation)
       return ret
     elif isinstance(relay_pattern, ConstantPattern):
       return expr
@@ -125,7 +131,7 @@ def extract_subgraph(expr, pattern):
       return new_expr
 
     elif is_tuplegetitem_node(expr):
-      tuple_value = helper(expr.tuple_value, depth, relay_pattern.tuple_value)
+      tuple_value = helper(expr.tuple_value, depth, relay_pattern.tuple)
       new_expr = tvm.relay.expr.TupleGetItem(tuple_value, expr.index)
       set_old_expr_to_new(expr, new_expr)
       return new_expr
@@ -138,10 +144,7 @@ def extract_subgraph(expr, pattern):
 
     else:
       raise Exception(f"Expr type not implemented {type(expr)}")
-
-
-  return relay.transform.InferTypeExpr(helper(expr, depth, relay_pattern))
-
+  return helper(expr, depth, relay_pattern)
 
 # given a pattern and a relay expr matching that pattern, return the cheapest backend operator
 # satisfying the constraints and its cost. Return None if no backend operators satisfy constraints.
@@ -190,7 +193,7 @@ def get_optimal_backend_pattern(pattern_registry, expr, pattern, given_backends 
     # Exceptional cases to block
     # - 1) tensorrt_0-Op(add)[*, *] - If the add is the sole operator, then TensorRT has an issue to execute it
     if cheapest_bp == 'tensorrt_0-Op(add)[*, *]' and len(expr.checked_type.shape) != 4:
-      cheapest_bp = f'tvm-{pattern.get_name()}' # fallback op name
+      cheapest_bp = f'autotvm-{pattern.get_name()}' # fallback op name
 
   if min_cost == float('inf') and not need_tvm_fallback_ops:
     raise Exception("No corresponding backend operators / or backend op errors out (e.g., CuDNN conv_bias_relu)")
@@ -255,24 +258,19 @@ class CompGraphOptimizer:
           if backend_name not in backend_pattern_map:
             backend_pattern_map[backend_name] = set()
           backend_pattern_map[backend_name].add(pat.get_pattern())
-
-        all_patterns = set()
+        
         for backend, patterns in backend_pattern_map.items():
           logging.info(f"  >> backend name: {backend} ({len(patterns)})")
           for pat in patterns:
             logging.info(f"     - {pat}")
-            all_patterns.add(pat)
           logging.info(f"\n")
-
-        logging.info(f"all patterns: {all_patterns}")
-
+        
         # For backend ablation study where we are given a list of backends,
         # We need TVM (no-tuning) fall back operator patterns to have full op coverage
         # if AutoTVM is not inlcuded as a backend
         # Warning(@Soo): We need to discard TVM fallback operator fusion patterns that include ops supported by
         # backend in a list. It is currently dealt by the following codes.
         fallback_backend_pats = None
-
         while not frontier_queue.empty():
             # Facilitate the debugging process
             self._pattern_registry.save_to_log()
@@ -281,19 +279,27 @@ class CompGraphOptimizer:
 
             logging.info("="*45)
             if is_call_node(f_expr):
-                logging.info(f"Node {f._topological_order}, {str(f_expr.op)} popped")
+                logging.info(f"(topo_order, pattern) : {f._topological_order}, {str(f_expr.op)}")
             else:
-                logging.info(f"Node {f._topological_order}, {type(f_expr)} (Non-call node) popped")
+                logging.info(f"(topo_order, pattern) : {f._topological_order}, {type(f_expr)}, Non-call node")
 
             n_match_frontier = 0
 
-            for pat in all_patterns:
+            num_matches = 0
+            for backend_pattern in self._pattern_registry.all_backend_patterns:
+                pat = backend_pattern.get_pattern()
+                backend = backend_pattern.get_backend()
+
+            #for pat in self._pattern_registry.get_all_patterns():
+                # print("Checking... ", pat)
+
                 # ordered_pattern_matcher consider the order of arguments when matching
                 # in contrast to basic Relay pattern matching.
                 # If we don't use this, we need to modify extract_subgraph (for op measurement)
                 if self._ordered_pattern_matcher.match(f_expr, pat.get_relay_pattern()):
+                # if pat.get_relay_pattern().match(f_expr):
                     assert pat.get_depth() >= 1 # 0 depth doesn't make sense
-                    logging.info(f"Node {f._topological_order} and pattern {pat.get_relay_pattern()} is matched")
+                    logging.info(f"The following pattern is matched: {pat.get_relay_pattern()}")
 
                     # Get best backend op and its cost for matched nodes
                     best_backend_pattern_name, min_cost = get_optimal_backend_pattern(self._pattern_registry, f_expr,
@@ -301,26 +307,24 @@ class CompGraphOptimizer:
                                                                            self._need_tvm_fallback_ops,
                                                                            fallback_backend_pats)
 
-                    logging.info(f"Node {f._topological_order} and pattern {pat.get_relay_pattern()} has best backend {best_backend_pattern_name}")
-
                     # Skip update if there is no backend op available for matched pattern
                     if best_backend_pattern_name is None:
                         continue
 
+                    num_matches += 1
                     # Extract match information; refer to detailed explanation in the MatchInfoExtractor
                     matched_nodes, match_dic, new_frontiers = extractor.extract(f_expr, pat.get_relay_pattern(), best_backend_pattern_name)
 
-                    logging.info(f"Node {f._topological_order} and pattern {pat.get_relay_pattern()} matched nodes {[mf._topological_order for mf in matched_nodes]} with new frontiers {[nf._topological_order for nf in new_frontiers]}")
-
-                    dp_table.update(matched_nodes, match_dic, best_backend_pattern_name, min_cost)
-                    # print(dp_table._dp_table)
+                    dp_table.update(matched_nodes, match_dic, best_backend_pattern_name, min_cost, new_frontiers)
 
                     # Add new frontiers to the queue
                     prev_qsize = frontier_queue._frontiers.qsize()
                     frontier_queue.put(new_frontiers)
                     n_match_frontier += frontier_queue._frontiers.qsize() - prev_qsize
-
-            assert n_match_frontier > 0
+            
+            if num_matches == 0:
+              print(f_expr, type(f_expr))
+              assert 0
 
         # Assign backend operator annotation (group_id + backend_pattern_name) to Relay expr (backend attribute)
         optimized_match = dp_table.assign_backend_pattern_to_expr()

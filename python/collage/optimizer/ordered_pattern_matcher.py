@@ -109,7 +109,7 @@ class OrderedPatternMatcher:
 
     def visit_expr_tuplegetitem(self, expr, pattern):
         is_matched = True
-        is_matched &= self.visit_expr(expr.tuple_value, pattern.tuple_value)
+        is_matched &= self.visit_expr(expr.tuple_value, pattern.tuple)
         return is_matched
 
     def visit_expr_call(self, expr, pattern):

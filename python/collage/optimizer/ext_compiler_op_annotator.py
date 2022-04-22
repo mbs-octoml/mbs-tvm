@@ -1,6 +1,7 @@
 from tvm.relay.expr_functor import ExprMutator
 #from collage.utils import *
 import tvm.relay as relay
+from collage.utils import printe
 
 """
 This class annotates relay expression with compiler_begin and compiler_end

@@ -23,7 +23,7 @@ from deap import base
 from deap import creator
 from deap import tools
 import pandas as pd
-from collage.workloads.onnx_workloads import get_network_from_onnx
+from collage.workloads.torch_workloads import get_network_from_torch
 from .op_match_logger import OpMatchLogger
 import time
 from functools import lru_cache
@@ -57,7 +57,7 @@ class EvolutionarySearcher:
         self.batch_size = batch_size
         self.target_str = build_target
 
-        self.mod, self.params, self.shape_dict, _ = get_network_from_onnx(net_name, batch_size)
+        self.mod, self.params, self.shape_dict, _ = get_network_from_torch(net_name, batch_size)
         # self.mod, self.params = get_network_from_relay(net_name, 1)
         # self.shape_dict = {"data": [1, 64, 56, 56]}
 
@@ -175,7 +175,8 @@ class EvolutionarySearcher:
         except:
             logging.info("Error message from subprocess")
             logging.info(err)
-            raise
+            # raise
+            mean_perf, std_perf = 1000000, 0
 
         return mean_perf, std_perf
 
